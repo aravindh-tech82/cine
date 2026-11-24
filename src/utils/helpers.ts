@@ -162,3 +162,4 @@ export const INITIAL_WATCHLIST = [
     notes: 'Perfect dialogue for late night watching.'
   }
 ];
+

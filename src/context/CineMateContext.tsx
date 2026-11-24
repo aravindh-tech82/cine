@@ -66,6 +66,8 @@ interface CineMateContextType {
   skipMovie: (delta: number) => void;
   setMovieVolume: (volume: number) => void;
   toggleMovieMute: () => void;
+  remoteAudioBlocked: boolean;
+  unmuteRemoteAudio: () => void;
 
   // Live Chat
   chatMessages: ChatMessage[];
@@ -163,6 +165,7 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // Movie & Playback
   const [localMovieMetadata, setLocalMovieMetadata] = useState<MovieFileMetadata | null>(null);
   const [remoteMovieStream, setRemoteMovieStream] = useState<MediaStream | null>(null);
+  const [remoteAudioBlocked, setRemoteAudioBlocked] = useState(false);
   const localVideoElRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoElRef = useRef<HTMLVideoElement | null>(null);
   const movieNightStartTimeRef = useRef<number>(Date.now());
@@ -506,6 +509,16 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               resolution: localMovieMetadata.resolution,
             });
           }
+
+          // If local movie video is attached, ensure its tracks are captured
+          if (localVideoElRef.current) {
+            webrtcManagerRef.current?.attachLocalMovieStream(localVideoElRef.current);
+          }
+
+          // Negotiate with the newly joined peer
+          setTimeout(() => {
+            webrtcManagerRef.current?.initiateOffer();
+          }, 300);
         }
         break;
       }
@@ -821,31 +834,67 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   // Attach local video element and start stream capture
-  const attachLocalVideoElement = (el: HTMLVideoElement) => {
+  const attachLocalVideoElement = useCallback((el: HTMLVideoElement) => {
     localVideoElRef.current = el;
     if (el && webrtcManagerRef.current) {
-      el.onplay = () => {
-        // Capture stream if not already captured
+      const capture = () => {
+        console.log('[Context] Capturing movie stream from video element, readyState:', el.readyState);
         webrtcManagerRef.current?.attachLocalMovieStream(el);
       };
-    }
-  };
 
-  const attachRemoteVideoElement = (el: HTMLVideoElement) => {
+      if (el.readyState >= 1) {
+        capture();
+      }
+
+      el.addEventListener('loadedmetadata', capture);
+      el.addEventListener('canplay', capture);
+      el.addEventListener('play', capture);
+    }
+  }, []);
+
+  const safelyPlayRemoteVideo = useCallback((el: HTMLVideoElement) => {
+    if (!el) return;
+    const playPromise = el.play();
+    if (playPromise !== undefined) {
+      playPromise.catch((err: any) => {
+        console.warn('[Context] Remote movie autoplay caught:', err.name);
+        if (err.name === 'NotAllowedError') {
+          el.muted = true;
+          setRemoteAudioBlocked(true);
+          el.play().catch(console.warn);
+        }
+      });
+    }
+  }, []);
+
+  const unmuteRemoteAudio = useCallback(() => {
+    if (remoteVideoElRef.current) {
+      remoteVideoElRef.current.muted = false;
+      remoteVideoElRef.current.volume = playbackState.volume || 0.85;
+      setRemoteAudioBlocked(false);
+      setPlaybackState((prev) => ({ ...prev, isMuted: false }));
+    }
+  }, [playbackState.volume]);
+
+  const attachRemoteVideoElement = useCallback((el: HTMLVideoElement) => {
     remoteVideoElRef.current = el;
     if (el && remoteMovieStream) {
-      el.srcObject = remoteMovieStream;
-      el.play().catch(console.warn);
+      if (el.srcObject !== remoteMovieStream) {
+        el.srcObject = remoteMovieStream;
+      }
+      safelyPlayRemoteVideo(el);
     }
-  };
+  }, [remoteMovieStream, safelyPlayRemoteVideo]);
 
   // Sync Video Elements with WebRTC remote stream
   useEffect(() => {
     if (remoteVideoElRef.current && remoteMovieStream) {
-      remoteVideoElRef.current.srcObject = remoteMovieStream;
-      remoteVideoElRef.current.play().catch(console.warn);
+      if (remoteVideoElRef.current.srcObject !== remoteMovieStream) {
+        remoteVideoElRef.current.srcObject = remoteMovieStream;
+      }
+      safelyPlayRemoteVideo(remoteVideoElRef.current);
     }
-  }, [remoteMovieStream]);
+  }, [remoteMovieStream, safelyPlayRemoteVideo]);
 
   // Video Player Controls
   const playMovie = () => {
@@ -1087,6 +1136,8 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         skipMovie,
         setMovieVolume,
         toggleMovieMute,
+        remoteAudioBlocked,
+        unmuteRemoteAudio,
         chatMessages,
         unreadChatCount,
         isChatOpen,
@@ -1122,3 +1173,4 @@ export const useCineMate = () => {
   }
   return context;
 };
+

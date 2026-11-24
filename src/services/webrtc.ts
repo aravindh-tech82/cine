@@ -16,11 +16,25 @@ export class WebRTCManager {
   private dataChannel: RTCDataChannel | null = null;
   private localWebcamStream: MediaStream | null = null;
   private localMovieStream: MediaStream | null = null;
+  private remoteWebcamStream: MediaStream = new MediaStream();
+  private remoteMovieStream: MediaStream = new MediaStream();
+
   private movieSenders: RTCRtpSender[] = [];
   private webcamSenders: RTCRtpSender[] = [];
   private options: WebRTCOptions | null = null;
   private unsubscribeSignaling: (() => void) | null = null;
-  
+
+  // Stream identification metadata
+  private knownMovieStreamId: string | null = null;
+  private knownWebcamStreamId: string | null = null;
+  private knownMovieTrackIds: Set<string> = new Set();
+  private knownWebcamTrackIds: Set<string> = new Set();
+
+  // WebRTC ICE & Negotiation queueing
+  private pendingCandidates: RTCIceCandidateInit[] = [];
+  private isNegotiating: boolean = false;
+  private needsRenegotiation: boolean = false;
+
   // Audio analysis for speech detection / ducking
   private audioContext: AudioContext | null = null;
   private speechAnalyser: AnalyserNode | null = null;
@@ -75,6 +89,18 @@ export class WebRTCManager {
           case 'ice-candidate':
             await this.handleCandidate(msg.payload);
             break;
+          case 'stream-meta':
+            this.handleStreamMeta(msg.payload);
+            break;
+          case 'join':
+            // When a peer joins, if host, initiate negotiation immediately
+            if (options.isHost) {
+              console.log('[WebRTC] Peer joined room, initiating offer from host');
+              setTimeout(() => {
+                this.initiateOffer();
+              }, 300);
+            }
+            break;
         }
       } catch (err) {
         console.error('[WebRTC] Signaling error handling msg:', msg.type, err);
@@ -114,25 +140,63 @@ export class WebRTCManager {
     };
 
     pc.ontrack = (event) => {
-      console.log('[WebRTC] Received remote track:', event.track.kind, event.streams);
-      const stream = event.streams[0] || new MediaStream([event.track]);
-      
-      // Determine if track belongs to movie stream or webcam stream
-      // Movie streams are explicitly tagged with stream ID starting with 'cinemate-movie' or track id containing 'movie'
-      const isMovie = stream.id.includes('movie') || event.track.id.includes('movie') || event.track.label.toLowerCase().includes('movie');
+      const track = event.track;
+      const stream = event.streams[0] || new MediaStream([track]);
+      console.log(`[WebRTC] ontrack fired: kind=${track.kind}, trackId=${track.id}, streamId=${stream.id}`);
+
+      let isMovie = false;
+
+      // On host side, all remote incoming tracks are strictly from the guest's webcam/mic
+      if (this.options?.isHost) {
+        isMovie = false;
+      } else if (this.knownMovieStreamId && stream.id === this.knownMovieStreamId) {
+        isMovie = true;
+      } else if (this.knownMovieTrackIds.has(track.id)) {
+        isMovie = true;
+      } else if (this.knownWebcamStreamId && stream.id === this.knownWebcamStreamId) {
+        isMovie = false;
+      } else if (this.knownWebcamTrackIds.has(track.id)) {
+        isMovie = false;
+      } else {
+        // 2. Intelligent stream separation heuristic on guest side:
+        // If a video track arrives and we already have a webcam video track with a different stream ID, it is the movie!
+        if (track.kind === 'video') {
+          if (this.remoteWebcamStream.getVideoTracks().length > 0 && stream.id !== this.knownWebcamStreamId) {
+            isMovie = true;
+            this.knownMovieStreamId = stream.id;
+          } else {
+            isMovie = false;
+            this.knownWebcamStreamId = stream.id;
+          }
+        } else if (track.kind === 'audio') {
+          if (this.remoteWebcamStream.getAudioTracks().length > 0 && stream.id !== this.knownWebcamStreamId) {
+            isMovie = true;
+            this.knownMovieStreamId = stream.id;
+          } else {
+            isMovie = false;
+            this.knownWebcamStreamId = stream.id;
+          }
+        }
+      }
 
       if (isMovie) {
-        console.log('[WebRTC] Dispatching remote movie stream:', stream.id);
+        console.log('[WebRTC] Routing track to REMOTE MOVIE STREAM:', track.kind, track.id);
+        if (!this.remoteMovieStream.getTracks().some((t) => t.id === track.id)) {
+          this.remoteMovieStream.addTrack(track);
+        }
         if (this.options) {
-          this.options.onRemoteMovieStream(stream);
+          this.options.onRemoteMovieStream(this.remoteMovieStream);
         }
       } else {
-        console.log('[WebRTC] Dispatching remote webcam stream:', stream.id);
-        if (this.options) {
-          this.options.onRemoteWebcamStream(stream);
+        console.log('[WebRTC] Routing track to REMOTE WEBCAM STREAM:', track.kind, track.id);
+        if (!this.remoteWebcamStream.getTracks().some((t) => t.id === track.id)) {
+          this.remoteWebcamStream.addTrack(track);
         }
-        if (event.track.kind === 'audio') {
-          this.setupAudioAnalysis(stream);
+        if (this.options) {
+          this.options.onRemoteWebcamStream(this.remoteWebcamStream);
+        }
+        if (track.kind === 'audio') {
+          this.setupAudioAnalysis(this.remoteWebcamStream);
         }
       }
     };
@@ -153,6 +217,40 @@ export class WebRTCManager {
     // Attach existing local streams if already ready
     if (this.localWebcamStream) {
       this.attachLocalWebcamStream(this.localWebcamStream);
+    }
+  }
+
+  private handleStreamMeta(meta: any) {
+    if (!meta) return;
+    if (meta.movieStreamId) this.knownMovieStreamId = meta.movieStreamId;
+    if (meta.webcamStreamId) this.knownWebcamStreamId = meta.webcamStreamId;
+
+    if (Array.isArray(meta.movieTrackIds)) {
+      meta.movieTrackIds.forEach((id: string) => this.knownMovieTrackIds.add(id));
+    }
+    if (Array.isArray(meta.webcamTrackIds)) {
+      meta.webcamTrackIds.forEach((id: string) => this.knownWebcamTrackIds.add(id));
+    }
+
+    console.log('[WebRTC] Received stream-meta:', {
+      movieStreamId: this.knownMovieStreamId,
+      webcamStreamId: this.knownWebcamStreamId,
+      movieTrackCount: this.knownMovieTrackIds.size,
+    });
+
+    // Check if any tracks in remoteWebcamStream were misclassified before meta arrived
+    let reassignNeeded = false;
+    this.remoteWebcamStream.getTracks().forEach((track) => {
+      if (this.knownMovieTrackIds.has(track.id)) {
+        this.remoteWebcamStream.removeTrack(track);
+        this.remoteMovieStream.addTrack(track);
+        reassignNeeded = true;
+      }
+    });
+
+    if (reassignNeeded && this.options) {
+      this.options.onRemoteWebcamStream(this.remoteWebcamStream);
+      this.options.onRemoteMovieStream(this.remoteMovieStream);
     }
   }
 
@@ -191,24 +289,50 @@ export class WebRTCManager {
 
   public async initiateOffer() {
     if (!this.pc) return;
+
+    if (this.pc.signalingState !== 'stable') {
+      console.log(`[WebRTC] Signaling state is '${this.pc.signalingState}', queueing renegotiation`);
+      this.needsRenegotiation = true;
+      return;
+    }
+
     try {
+      this.isNegotiating = true;
       const offer = await this.pc.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: true,
       });
       await this.pc.setLocalDescription(offer);
-      signalingService.sendMessage('sdp-offer', offer);
-      console.log('[WebRTC] Offer sent');
+
+      const meta = {
+        movieStreamId: this.localMovieStream?.id || null,
+        webcamStreamId: this.localWebcamStream?.id || null,
+        movieTrackIds: this.localMovieStream?.getTracks().map((t) => t.id) || [],
+        webcamTrackIds: this.localWebcamStream?.getTracks().map((t) => t.id) || [],
+      };
+
+      signalingService.sendMessage('sdp-offer', { offer, ...meta });
+      signalingService.sendMessage('stream-meta', meta);
+      console.log('[WebRTC] Offer and stream metadata sent');
     } catch (err) {
       console.error('[WebRTC] Failed to create offer:', err);
+      this.isNegotiating = false;
     }
   }
 
-  private async handleOffer(offer: RTCSessionDescriptionInit) {
+  private async handleOffer(payload: any) {
     if (!this.pc) return;
+
+    const offer = payload.offer || payload;
+    this.handleStreamMeta(payload);
+
     try {
       console.log('[WebRTC] Handling offer...');
       await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+      // Flush queued candidates
+      await this.drainPendingCandidates();
+
       const answer = await this.pc.createAnswer();
       await this.pc.setLocalDescription(answer);
       signalingService.sendMessage('sdp-answer', answer);
@@ -223,17 +347,49 @@ export class WebRTCManager {
     try {
       console.log('[WebRTC] Handling answer...');
       await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
+      this.isNegotiating = false;
+
+      // Flush queued candidates
+      await this.drainPendingCandidates();
+
+      if (this.needsRenegotiation) {
+        this.needsRenegotiation = false;
+        setTimeout(() => this.initiateOffer(), 200);
+      }
     } catch (err) {
       console.error('[WebRTC] Failed to handle answer:', err);
+      this.isNegotiating = false;
     }
   }
 
   private async handleCandidate(candidate: RTCIceCandidateInit) {
-    if (!this.pc) return;
+    if (!candidate) return;
+
+    // If remote description is not set yet, queue candidate
+    if (!this.pc || !this.pc.remoteDescription || !this.pc.remoteDescription.type) {
+      this.pendingCandidates.push(candidate);
+      return;
+    }
+
     try {
       await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (err) {
       console.error('[WebRTC] Error adding ICE candidate:', err);
+    }
+  }
+
+  private async drainPendingCandidates() {
+    if (!this.pc || !this.pc.remoteDescription || !this.pc.remoteDescription.type) return;
+
+    while (this.pendingCandidates.length > 0) {
+      const cand = this.pendingCandidates.shift();
+      if (cand) {
+        try {
+          await this.pc.addIceCandidate(new RTCIceCandidate(cand));
+        } catch (e) {
+          console.warn('[WebRTC] Error adding drained candidate', e);
+        }
+      }
     }
   }
 
@@ -243,7 +399,7 @@ export class WebRTCManager {
     try {
       const offer = await this.pc.createOffer({ iceRestart: true });
       await this.pc.setLocalDescription(offer);
-      signalingService.sendMessage('sdp-offer', offer);
+      signalingService.sendMessage('sdp-offer', { offer });
     } catch (e) {
       console.error('[WebRTC] Failed ICE restart:', e);
     }
@@ -276,7 +432,15 @@ export class WebRTCManager {
       }
     });
 
-    // If already connected, renegotiate
+    const meta = {
+      webcamStreamId: stream.id,
+      webcamTrackIds: stream.getTracks().map((t) => t.id),
+      movieStreamId: this.localMovieStream?.id || null,
+      movieTrackIds: this.localMovieStream?.getTracks().map((t) => t.id) || [],
+    };
+    signalingService.sendMessage('stream-meta', meta);
+
+    // If already connected and host, renegotiate
     if (this.pc.signalingState === 'stable' && this.options?.isHost) {
       this.initiateOffer();
     }
@@ -287,11 +451,35 @@ export class WebRTCManager {
    */
   public attachLocalMovieStream(videoElement: HTMLVideoElement): MediaStream | null {
     try {
+      // Check if we already have an active stream on this video element
+      if (this.localMovieStream && this.localMovieStream.getTracks().some((t) => t.readyState === 'live')) {
+        console.log('[WebRTC] Local movie stream is already active, verifying senders on PC');
+        if (this.pc) {
+          let addedAny = false;
+          this.localMovieStream.getTracks().forEach((track) => {
+            if (!this.movieSenders.some((s) => s.track?.id === track.id)) {
+              try {
+                const sender = this.pc!.addTrack(track, this.localMovieStream!);
+                this.movieSenders.push(sender);
+                addedAny = true;
+                console.log(`[WebRTC] Added previously unattached track to PC: kind=${track.kind}, id=${track.id}`);
+              } catch (e) {
+                console.warn('[WebRTC] Error adding track from existing stream:', e);
+              }
+            }
+          });
+          if (addedAny) {
+            this.initiateOffer();
+          }
+        }
+        return this.localMovieStream;
+      }
+
       let stream: MediaStream | null = null;
       if (typeof (videoElement as any).captureStream === 'function') {
-        stream = (videoElement as any).captureStream();
+        stream = (videoElement as any).captureStream(30);
       } else if (typeof (videoElement as any).mozCaptureStream === 'function') {
-        stream = (videoElement as any).mozCaptureStream();
+        stream = (videoElement as any).mozCaptureStream(30);
       }
 
       if (!stream) {
@@ -299,18 +487,26 @@ export class WebRTCManager {
         return null;
       }
 
-      // Clone tracks and give them movie-specific stream identifier
-      const movieStream = new MediaStream();
-      stream.getTracks().forEach((track) => {
-        // Tag track for recognition
-        movieStream.addTrack(track);
-      });
+      console.log(`[WebRTC] Captured movie stream: id=${stream.id}, tracks=${stream.getTracks().length}`);
+      this.localMovieStream = stream;
 
-      this.localMovieStream = movieStream;
+      // Listen for dynamically added audio tracks (e.g. Chrome audio decoder initializing on playback)
+      stream.onaddtrack = (event) => {
+        console.log('[WebRTC] Movie stream dynamically added track:', event.track.kind, event.track.id);
+        if (this.pc && !this.movieSenders.some((s) => s.track?.id === event.track.id)) {
+          try {
+            const sender = this.pc.addTrack(event.track, stream!);
+            this.movieSenders.push(sender);
+            this.initiateOffer();
+          } catch (e) {
+            console.error('[WebRTC] Error adding dynamic movie track:', e);
+          }
+        }
+      };
 
-      if (!this.pc) return movieStream;
+      if (!this.pc) return stream;
 
-      // Remove existing movie senders
+      // Remove existing movie senders if any
       this.movieSenders.forEach((sender) => {
         try {
           this.pc?.removeTrack(sender);
@@ -320,22 +516,30 @@ export class WebRTCManager {
       });
       this.movieSenders = [];
 
-      // Add movie tracks
-      movieStream.getTracks().forEach((track) => {
+      // Add all movie tracks (video and audio)
+      stream.getTracks().forEach((track) => {
         try {
-          const sender = this.pc!.addTrack(track, movieStream);
+          const sender = this.pc!.addTrack(track, stream!);
           this.movieSenders.push(sender);
+          console.log(`[WebRTC] Added movie track to PC: kind=${track.kind}, id=${track.id}`);
         } catch (err) {
           console.error('[WebRTC] Error adding movie track:', err);
         }
       });
 
-      // Renegotiate
-      if (this.pc.signalingState === 'stable') {
-        this.initiateOffer();
-      }
+      // Broadcast stream metadata
+      const meta = {
+        movieStreamId: stream.id,
+        movieTrackIds: stream.getTracks().map((t) => t.id),
+        webcamStreamId: this.localWebcamStream?.id || null,
+        webcamTrackIds: this.localWebcamStream?.getTracks().map((t) => t.id) || [],
+      };
+      signalingService.sendMessage('stream-meta', meta);
 
-      return movieStream;
+      // Renegotiate with peer
+      this.initiateOffer();
+
+      return stream;
     } catch (err) {
       console.error('[WebRTC] Failed to capture movie stream:', err);
       return null;
@@ -390,7 +594,6 @@ export class WebRTCManager {
           sum += buffer[i];
         }
         const average = sum / buffer.length;
-        // Speaking threshold
         const speakingNow = average > 24;
         if (speakingNow !== this.isSpeaking) {
           this.isSpeaking = speakingNow;
@@ -446,6 +649,7 @@ export class WebRTCManager {
     this.localMovieStream = null;
     this.movieSenders = [];
     this.webcamSenders = [];
+    this.pendingCandidates = [];
     this.options = null;
   }
 }

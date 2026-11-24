@@ -27,6 +27,8 @@ export const VideoPlayer: React.FC = () => {
     skipMovie,
     setMovieVolume,
     toggleMovieMute,
+    remoteAudioBlocked,
+    unmuteRemoteAudio,
     activeReactions,
     sendReaction,
     toggleCamera,
@@ -204,9 +206,24 @@ export const VideoPlayer: React.FC = () => {
           playsInline
           autoPlay
           onTimeUpdate={handleTimeUpdate}
-          onClick={() => (playbackState.isPlaying ? pauseMovie() : playMovie())}
+          onClick={() => {
+            if (remoteAudioBlocked) unmuteRemoteAudio();
+            if (playbackState.isPlaying) pauseMovie();
+            else playMovie();
+          }}
           className="w-full h-full object-contain cursor-pointer"
         />
+      )}
+
+      {/* Autoplay Audio Unblock Floating Banner for Guest */}
+      {!isHost && remoteMovieStream && remoteAudioBlocked && (
+        <button
+          onClick={unmuteRemoteAudio}
+          className="absolute top-16 left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-xs font-semibold shadow-2xl border border-white/20 flex items-center gap-2 animate-bounce cursor-pointer transition-transform hover:scale-105"
+        >
+          <Volume2 className="w-4 h-4 animate-pulse" />
+          <span>Click to Unmute Movie Sound 🔊</span>
+        </button>
       )}
 
       {/* Guest Waiting State if stream not yet flowing */}

@@ -94,3 +94,4 @@ create policy "Allow all operations for chat" on public.chat_messages for all us
 -- Enable Realtime replication
 alter publication supabase_realtime add table public.rooms;
 alter publication supabase_realtime add table public.chat_messages;
+

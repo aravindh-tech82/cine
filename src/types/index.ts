@@ -168,6 +168,7 @@ export interface SignalingPayload {
     | 'sdp-offer'
     | 'sdp-answer'
     | 'ice-candidate'
+    | 'stream-meta'
     | 'movie-selected'
     | 'playback-control'
     | 'chat-message'
@@ -178,3 +179,4 @@ export interface SignalingPayload {
   payload: any;
   timestamp: number;
 }
+
