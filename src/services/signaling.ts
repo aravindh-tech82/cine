@@ -19,6 +19,13 @@ class SignalingService {
    * Initializes signaling for a given room and participant
    */
   public joinRoom(roomId: string, senderId: string, onMessage: MessageHandler): () => void {
+    if (this.roomId === roomId && this.senderId === senderId && this.isConnected) {
+      this.handlers.add(onMessage);
+      return () => {
+        this.handlers.delete(onMessage);
+      };
+    }
+
     this.roomId = roomId;
     this.senderId = senderId;
     this.handlers.add(onMessage);
@@ -154,7 +161,9 @@ class SignalingService {
   public sendMessage(type: SignalingPayload['type'], payload: any): void {
     if (!this.roomId) return;
 
+    const messageId = `msg_${this.senderId}_${type}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const message: SignalingPayload = {
+      id: messageId,
       roomId: this.roomId,
       senderId: this.senderId,
       type,
@@ -163,8 +172,7 @@ class SignalingService {
     };
 
     // Mark as seen locally to prevent reflection
-    const msgKey = `${message.senderId}_${message.type}_${message.timestamp}`;
-    this.seenMessages.add(msgKey);
+    this.seenMessages.add(messageId);
 
     // 1. Local Server SSE Bridge (POST /api/signaling/send)
     try {
@@ -203,15 +211,17 @@ class SignalingService {
   }
 
   private dispatchMessage(message: SignalingPayload) {
-    // Deduplicate messages across multiple active transports
-    const msgKey = `${message.senderId}_${message.type}_${message.timestamp}_${JSON.stringify(message.payload).slice(0, 30)}`;
+    if (!message || message.senderId === this.senderId) return;
+    if (message.roomId && this.roomId && message.roomId !== this.roomId) return;
+
+    const msgKey = message.id || `${message.senderId}_${message.type}_${message.timestamp}_${typeof message.payload === 'object' ? JSON.stringify(message.payload) : message.payload}`;
     if (this.seenMessages.has(msgKey)) return;
     this.seenMessages.add(msgKey);
 
     // Prune seen messages cache if it gets too large
-    if (this.seenMessages.size > 200) {
+    if (this.seenMessages.size > 500) {
       const arr = Array.from(this.seenMessages);
-      this.seenMessages = new Set(arr.slice(arr.length - 100));
+      this.seenMessages = new Set(arr.slice(arr.length - 250));
     }
 
     this.handlers.forEach((handler) => {

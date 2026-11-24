@@ -10,12 +10,16 @@ import {
   Maximize,
   Minimize,
   Film,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
 import { formatTime } from '../../utils/helpers';
 
 export const VideoPlayer: React.FC = () => {
   const {
     currentUser,
+    friendUser,
+    connectionStats,
     localMovieMetadata,
     remoteMovieStream,
     attachLocalVideoElement,
@@ -162,13 +166,25 @@ export const VideoPlayer: React.FC = () => {
   const handleSeekClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const pos = (e.clientX - rect.left) / rect.width;
-    const dur = videoRef.current?.duration || playbackState.duration || 100;
+    const dur = isHost ? (videoRef.current?.duration || playbackState.duration || 100) : (playbackState.duration || 100);
     const targetTime = Math.max(0, Math.min(dur, pos * dur));
     seekMovie(targetTime);
   };
 
-  const currentDuration = videoRef.current?.duration || playbackState.duration || 0;
-  const currentVideoTime = videoRef.current?.currentTime || playbackState.currentTime || 0;
+  const hasLiveMovieTrack = Boolean(
+    !isHost &&
+    remoteMovieStream &&
+    remoteMovieStream.getVideoTracks().some((t) => t.readyState === 'live')
+  );
+
+  const currentDuration = isHost
+    ? (videoRef.current?.duration || playbackState.duration || 0)
+    : (playbackState.duration || videoRef.current?.duration || 0);
+
+  const currentVideoTime = isHost
+    ? (videoRef.current?.currentTime || playbackState.currentTime || 0)
+    : playbackState.currentTime;
+
   const progressPercent = currentDuration > 0 ? (currentVideoTime / currentDuration) * 100 : 0;
 
   return (
@@ -227,21 +243,57 @@ export const VideoPlayer: React.FC = () => {
       )}
 
       {/* Guest Waiting State if stream not yet flowing */}
-      {!isHost && !remoteMovieStream && (
-        <div className="absolute inset-0 bg-[#0B0A10]/90 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center z-10">
-          <div className="w-16 h-16 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center mb-4 animate-pulse">
-            <Film className="w-8 h-8 text-purple-300" />
-          </div>
-          <h3 className="font-heading font-bold text-lg text-white">
-            Connecting to Host's Stream...
-          </h3>
-          <p className="text-xs text-purple-200/70 mt-2 max-w-md leading-relaxed">
-            Your host is setting up the movie. Once they hit play, the movie will stream directly peer-to-peer to your screen in real time 🍿
-          </p>
-          <div className="mt-4 flex items-center gap-2 text-[11px] text-emerald-400 font-medium">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-            <span>WebRTC Direct Channel Ready</span>
-          </div>
+      {!isHost && !hasLiveMovieTrack && (
+        <div className="absolute inset-0 bg-[#0B0A10]/95 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center z-10 animate-fade-in">
+          {connectionStats.iceConnectionState === 'checking' || connectionStats.iceConnectionState === 'new' ? (
+            <>
+              <div className="w-16 h-16 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center mb-4">
+                <Loader2 className="w-8 h-8 text-purple-300 animate-spin" />
+              </div>
+              <h3 className="font-heading font-bold text-lg text-white">
+                Connecting to Host...
+              </h3>
+              <p className="text-xs text-purple-200/70 mt-2 max-w-md leading-relaxed">
+                Establishing direct peer-to-peer WebRTC connection with your friend.
+              </p>
+              <div className="mt-4 flex items-center gap-2 text-[11px] text-amber-300 font-medium bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                <span>WebRTC Connecting...</span>
+              </div>
+            </>
+          ) : connectionStats.iceConnectionState === 'failed' || connectionStats.iceConnectionState === 'disconnected' ? (
+            <>
+              <div className="w-16 h-16 rounded-full bg-rose-500/20 border border-rose-500/40 flex items-center justify-center mb-4 text-rose-400">
+                <AlertCircle className="w-8 h-8" />
+              </div>
+              <h3 className="font-heading font-bold text-lg text-white">
+                Connection Interrupted
+              </h3>
+              <p className="text-xs text-purple-200/70 mt-2 max-w-md leading-relaxed">
+                Could not connect to the host's browser. Checking network connectivity...
+              </p>
+              <div className="mt-4 flex items-center gap-2 text-[11px] text-rose-400 font-medium bg-rose-500/10 border border-rose-500/20 px-3 py-1 rounded-full">
+                <span className="w-2 h-2 rounded-full bg-rose-400" />
+                <span>Connection Failed</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="w-16 h-16 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center mb-4 animate-pulse">
+                <Film className="w-8 h-8 text-purple-300" />
+              </div>
+              <h3 className="font-heading font-bold text-lg text-white">
+                {room?.movieTitle ? `Ready for "${room.movieTitle}"` : 'Waiting for Host to Start Movie'}
+              </h3>
+              <p className="text-xs text-purple-200/70 mt-2 max-w-md leading-relaxed">
+                {friendUser ? friendUser.name : 'Your host'} is in the cinema room. Once they press Play, the movie will stream directly in real time 🍿
+              </p>
+              <div className="mt-4 flex items-center gap-2 text-[11px] text-purple-300 font-medium bg-purple-500/10 border border-purple-500/20 px-3 py-1 rounded-full">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Peer Connected · Waiting for Host to Press Play</span>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -272,10 +324,22 @@ export const VideoPlayer: React.FC = () => {
           {room?.movieTitle || localMovieMetadata?.name || 'Private Cinema Night'}
         </span>
         <div className="w-px h-3 bg-white/20" />
-        <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-semibold tracking-wide">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          {playbackState.syncStatus === 'synced' ? 'Synced' : 'Synchronizing'}
-        </span>
+        {isHost ? (
+          <span className="flex items-center gap-1 text-[10px] text-purple-300 font-semibold tracking-wide">
+            <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+            Streaming as Host
+          </span>
+        ) : hasLiveMovieTrack ? (
+          <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-semibold tracking-wide">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            Movie Stream Connected
+          </span>
+        ) : (
+          <span className="flex items-center gap-1 text-[10px] text-amber-300 font-semibold tracking-wide">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+            Waiting for Stream
+          </span>
+        )}
       </div>
 
       {/* Big Play/Pause Center Indicator on Click/Hover */}

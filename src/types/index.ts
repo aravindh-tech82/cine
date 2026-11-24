@@ -155,6 +155,7 @@ export interface ConnectionStats {
 }
 
 export interface SignalingPayload {
+  id?: string;
   roomId: string;
   senderId: string;
   type: 

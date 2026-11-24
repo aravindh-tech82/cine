@@ -169,6 +169,9 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const localVideoElRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoElRef = useRef<HTMLVideoElement | null>(null);
   const movieNightStartTimeRef = useRef<number>(Date.now());
+  const playMovieRef = useRef<() => void>(() => {});
+  const pauseMovieRef = useRef<() => void>(() => {});
+  const seekMovieRef = useRef<(time: number) => void>(() => {});
 
   const [playbackState, setPlaybackState] = useState<PlaybackState>({
     currentTime: 0,
@@ -605,21 +608,15 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
 
       case 'sync-heartbeat': {
-        // Check for playback drift
         if (currentUser.role === 'guest') {
-          const video = remoteVideoElRef.current;
-          if (video && payload.time !== undefined) {
-            const drift = Math.abs(video.currentTime - payload.time);
-            setPlaybackState((prev) => ({
-              ...prev,
-              drift,
-              syncStatus: drift < 0.4 ? 'synced' : drift < 1.5 ? 'syncing' : 'delayed',
-            }));
-            // Auto correct significant drift
-            if (drift > 1.2) {
-              video.currentTime = payload.time;
-            }
-          }
+          setPlaybackState((prev) => ({
+            ...prev,
+            currentTime: payload.time !== undefined ? payload.time : prev.currentTime,
+            duration: payload.duration || prev.duration,
+            isPlaying: payload.isPlaying !== undefined ? payload.isPlaying : prev.isPlaying,
+            syncStatus: 'synced',
+            drift: 0,
+          }));
         }
         break;
       }
@@ -628,28 +625,73 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Handle Playback Control Commands (Play, Pause, Seek, Sync)
   const handlePlaybackControlMessage = useCallback((data: any) => {
-    const video = currentUser.role === 'host' ? localVideoElRef.current : remoteVideoElRef.current;
-    if (!video) return;
+    if (!data || !data.action) return;
 
-    switch (data.action) {
-      case 'PLAY': {
-        if (Math.abs(video.currentTime - data.time) > 0.4) {
-          video.currentTime = data.time;
+    if (currentUser.role === 'host') {
+      switch (data.action) {
+        case 'REQUEST_PLAY': {
+          playMovieRef.current();
+          break;
         }
-        video.play().catch(console.warn);
-        setPlaybackState((prev) => ({ ...prev, isPlaying: true, currentTime: data.time }));
-        break;
+        case 'REQUEST_PAUSE': {
+          pauseMovieRef.current();
+          break;
+        }
+        case 'REQUEST_SEEK': {
+          if (typeof data.time === 'number') {
+            seekMovieRef.current(data.time);
+          }
+          break;
+        }
       }
-      case 'PAUSE': {
-        video.pause();
-        video.currentTime = data.time;
-        setPlaybackState((prev) => ({ ...prev, isPlaying: false, currentTime: data.time }));
-        break;
-      }
-      case 'SEEK': {
-        video.currentTime = data.time;
-        setPlaybackState((prev) => ({ ...prev, currentTime: data.time }));
-        break;
+    } else {
+      // Guest receives authoritative actions from host
+      switch (data.action) {
+        case 'PLAY': {
+          setPlaybackState((prev) => ({
+            ...prev,
+            isPlaying: true,
+            currentTime: typeof data.time === 'number' ? data.time : prev.currentTime,
+            duration: data.duration || prev.duration,
+          }));
+          if (remoteVideoElRef.current) {
+            remoteVideoElRef.current.play().catch((err) => {
+              if (err.name === 'NotAllowedError') {
+                remoteVideoElRef.current!.muted = true;
+                setRemoteAudioBlocked(true);
+                remoteVideoElRef.current!.play().catch(console.warn);
+              }
+            });
+          }
+          break;
+        }
+        case 'PAUSE': {
+          setPlaybackState((prev) => ({
+            ...prev,
+            isPlaying: false,
+            currentTime: typeof data.time === 'number' ? data.time : prev.currentTime,
+          }));
+          remoteVideoElRef.current?.pause();
+          break;
+        }
+        case 'SEEK': {
+          setPlaybackState((prev) => ({
+            ...prev,
+            currentTime: typeof data.time === 'number' ? data.time : prev.currentTime,
+            duration: data.duration || prev.duration,
+          }));
+          break;
+        }
+        case 'HEARTBEAT': {
+          setPlaybackState((prev) => ({
+            ...prev,
+            currentTime: typeof data.time === 'number' ? data.time : prev.currentTime,
+            duration: data.duration || prev.duration,
+            isPlaying: data.isPlaying !== undefined ? data.isPlaying : prev.isPlaying,
+            syncStatus: 'synced',
+          }));
+          break;
+        }
       }
     }
   }, [currentUser.role]);
@@ -896,48 +938,105 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [remoteMovieStream, safelyPlayRemoteVideo]);
 
-  // Video Player Controls
-  const playMovie = () => {
-    const video = currentUser.role === 'host' ? localVideoElRef.current : remoteVideoElRef.current;
-    const time = video ? video.currentTime : playbackState.currentTime;
+  // Video Player Controls (Host authoritative, Guest request-based)
+  const playMovie = useCallback(() => {
+    if (currentUser.role === 'host') {
+      const video = localVideoElRef.current;
+      if (!video) return;
 
-    if (video) video.play().catch(console.warn);
-    setPlaybackState((prev) => ({ ...prev, isPlaying: true }));
+      webrtcManagerRef.current?.attachLocalMovieStream(video);
 
-    const payload = { action: 'PLAY', time, timestamp: Date.now() };
-    const sent = webrtcManagerRef.current?.sendData(payload);
-    if (!sent) signalingService.sendMessage('playback-control', payload);
-  };
+      video.play().catch(console.warn);
+      setPlaybackState((prev) => ({
+        ...prev,
+        isPlaying: true,
+        currentTime: video.currentTime,
+        duration: video.duration || prev.duration,
+      }));
 
-  const pauseMovie = () => {
-    const video = currentUser.role === 'host' ? localVideoElRef.current : remoteVideoElRef.current;
-    const time = video ? video.currentTime : playbackState.currentTime;
+      const payload = {
+        action: 'PLAY',
+        time: video.currentTime,
+        duration: video.duration || 0,
+        timestamp: Date.now(),
+      };
+      const sent = webrtcManagerRef.current?.sendData(payload);
+      if (!sent) signalingService.sendMessage('playback-control', payload);
+    } else {
+      const payload = { action: 'REQUEST_PLAY', timestamp: Date.now() };
+      const sent = webrtcManagerRef.current?.sendData(payload);
+      if (!sent) signalingService.sendMessage('playback-control', payload);
+    }
+  }, [currentUser.role]);
 
-    if (video) video.pause();
-    setPlaybackState((prev) => ({ ...prev, isPlaying: false }));
+  const pauseMovie = useCallback(() => {
+    if (currentUser.role === 'host') {
+      const video = localVideoElRef.current;
+      if (!video) return;
 
-    const payload = { action: 'PAUSE', time, timestamp: Date.now() };
-    const sent = webrtcManagerRef.current?.sendData(payload);
-    if (!sent) signalingService.sendMessage('playback-control', payload);
-  };
+      video.pause();
+      setPlaybackState((prev) => ({
+        ...prev,
+        isPlaying: false,
+        currentTime: video.currentTime,
+      }));
 
-  const seekMovie = (time: number) => {
-    const video = currentUser.role === 'host' ? localVideoElRef.current : remoteVideoElRef.current;
-    if (video) video.currentTime = time;
-    setPlaybackState((prev) => ({ ...prev, currentTime: time }));
+      const payload = {
+        action: 'PAUSE',
+        time: video.currentTime,
+        timestamp: Date.now(),
+      };
+      const sent = webrtcManagerRef.current?.sendData(payload);
+      if (!sent) signalingService.sendMessage('playback-control', payload);
+    } else {
+      const payload = { action: 'REQUEST_PAUSE', timestamp: Date.now() };
+      const sent = webrtcManagerRef.current?.sendData(payload);
+      if (!sent) signalingService.sendMessage('playback-control', payload);
+    }
+  }, [currentUser.role]);
 
-    const payload = { action: 'SEEK', time, timestamp: Date.now() };
-    const sent = webrtcManagerRef.current?.sendData(payload);
-    if (!sent) signalingService.sendMessage('playback-control', payload);
-  };
+  const seekMovie = useCallback((time: number) => {
+    if (currentUser.role === 'host') {
+      const video = localVideoElRef.current;
+      if (video) {
+        video.currentTime = time;
+        setPlaybackState((prev) => ({ ...prev, currentTime: time }));
 
-  const skipMovie = (delta: number) => {
-    const video = currentUser.role === 'host' ? localVideoElRef.current : remoteVideoElRef.current;
-    if (video) {
-      const newTime = Math.max(0, Math.min(video.duration || 99999, video.currentTime + delta));
+        const payload = {
+          action: 'SEEK',
+          time,
+          duration: video.duration || 0,
+          timestamp: Date.now(),
+        };
+        const sent = webrtcManagerRef.current?.sendData(payload);
+        if (!sent) signalingService.sendMessage('playback-control', payload);
+      }
+    } else {
+      const payload = { action: 'REQUEST_SEEK', time, timestamp: Date.now() };
+      const sent = webrtcManagerRef.current?.sendData(payload);
+      if (!sent) signalingService.sendMessage('playback-control', payload);
+    }
+  }, [currentUser.role]);
+
+  const skipMovie = useCallback((delta: number) => {
+    if (currentUser.role === 'host') {
+      const video = localVideoElRef.current;
+      if (video) {
+        const newTime = Math.max(0, Math.min(video.duration || 99999, video.currentTime + delta));
+        seekMovie(newTime);
+      }
+    } else {
+      const newTime = Math.max(0, Math.min(playbackState.duration || 99999, playbackState.currentTime + delta));
       seekMovie(newTime);
     }
-  };
+  }, [currentUser.role, playbackState.duration, playbackState.currentTime, seekMovie]);
+
+  // Keep control refs synchronized
+  useEffect(() => {
+    playMovieRef.current = playMovie;
+    pauseMovieRef.current = pauseMovie;
+    seekMovieRef.current = seekMovie;
+  }, [playMovie, pauseMovie, seekMovie]);
 
   const setMovieVolume = (vol: number) => {
     setPlaybackState((prev) => ({ ...prev, volume: vol, isMuted: vol === 0 }));
@@ -952,17 +1051,20 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     if (remoteVideoElRef.current) remoteVideoElRef.current.muted = newMuted;
   };
 
-  // Heartbeat playback sync (host sends periodic time to guest)
+  // Heartbeat playback sync (host sends authoritative time to guest)
   useEffect(() => {
     if (currentUser.role !== 'host') return;
     const interval = setInterval(() => {
       if (localVideoElRef.current && playbackState.isPlaying) {
-        signalingService.sendMessage('sync-heartbeat', {
+        const payload = {
           time: localVideoElRef.current.currentTime,
+          duration: localVideoElRef.current.duration || 0,
           isPlaying: !localVideoElRef.current.paused,
-        });
+        };
+        const sent = webrtcManagerRef.current?.sendData({ action: 'HEARTBEAT', ...payload });
+        if (!sent) signalingService.sendMessage('sync-heartbeat', payload);
       }
-    }, 2500);
+    }, 2000);
     return () => clearInterval(interval);
   }, [currentUser.role, playbackState.isPlaying]);
 
