@@ -33,6 +33,7 @@ export const LobbyPage: React.FC = () => {
     selectLocalMovieFile,
     localMovieMetadata,
     setMovieTitle,
+    connectionStats,
   } = useCineMate();
 
   const [copied, setCopied] = useState(false);
@@ -146,6 +147,27 @@ export const LobbyPage: React.FC = () => {
           <p className="text-xs text-purple-200/70">
             Your movie night is almost ready · Strict 2-person private room
           </p>
+
+          {/* Real-time Connection Status Indicator */}
+          <div className="flex items-center gap-2 mt-2">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                connectionStats.step === 'connected'
+                  ? 'bg-emerald-400 animate-pulse'
+                  : connectionStats.step === 'failed'
+                  ? 'bg-rose-500'
+                  : 'bg-amber-400 animate-ping'
+              }`}
+            />
+            <span className="text-[11px] text-purple-200/90 font-medium font-mono">
+              Status: {connectionStats.stepMessage || connectionStats.step}
+            </span>
+            {connectionStats.step === 'connected' && (
+              <span className="text-[10px] text-emerald-400/90 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.2 rounded-full">
+                WebRTC Direct Channel Ready ({connectionStats.latency}ms)
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Invite Bar */}

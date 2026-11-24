@@ -2,33 +2,49 @@ import { getSupabaseClient } from './supabase';
 import { SignalingPayload } from '../types';
 
 type MessageHandler = (message: SignalingPayload) => void;
+type PresenceHandler = (presenceState: Record<string, any[]>) => void;
 
 class SignalingService {
   private roomId: string = '';
   private senderId: string = '';
+  private userRole: 'host' | 'guest' = 'host';
   private handlers: Set<MessageHandler> = new Set();
+  private presenceHandlers: Set<PresenceHandler> = new Set();
   private localBroadcastChannel: BroadcastChannel | null = null;
   private sseSource: EventSource | null = null;
   private supabaseChannel: any = null;
   private isConnected: boolean = false;
+  private isSupabaseSubscribed: boolean = false;
+  private outgoingQueue: SignalingPayload[] = [];
   private pingInterval: any = null;
   private currentLatency: number = 22;
   private seenMessages: Set<string> = new Set();
 
-  /**
-   * Initializes signaling for a given room and participant
-   */
-  public joinRoom(roomId: string, senderId: string, onMessage: MessageHandler): () => void {
-    if (this.roomId === roomId && this.senderId === senderId && this.isConnected) {
-      this.handlers.add(onMessage);
-      return () => {
-        this.handlers.delete(onMessage);
-      };
-    }
+  public setRole(role: 'host' | 'guest'): void {
+    this.userRole = role;
+  }
 
+  public getRoleTag(): string {
+    return this.userRole === 'host' ? '[HOST]' : '[GUEST]';
+  }
+
+  /**
+   * Initializes signaling for a given room, participant and role
+   */
+  public joinRoom(
+    roomId: string,
+    senderId: string,
+    role: 'host' | 'guest' = 'host',
+    onMessage?: MessageHandler,
+    onPresence?: PresenceHandler
+  ): () => void {
+    this.userRole = role;
     this.roomId = roomId;
     this.senderId = senderId;
-    this.handlers.add(onMessage);
+    if (onMessage) this.handlers.add(onMessage);
+    if (onPresence) this.presenceHandlers.add(onPresence);
+
+    console.log(`${this.getRoleTag()} [Signaling] Joining room: "${roomId}" as ${role} (id=${senderId})`);
 
     // 1. Setup Local Server SSE Bridge (connects Normal + Incognito + different browsers on localhost)
     this.setupLocalServerBridge(roomId, senderId);
@@ -37,7 +53,7 @@ class SignalingService {
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
-        console.log(`[Signaling] Connecting via Supabase Realtime channel: cinemate-room-${roomId}`);
+        console.log(`${this.getRoleTag()} [Signaling] Subscribing to Supabase Realtime channel: cinemate-room-${roomId}`);
         const channel = supabase.channel(`cinemate-room-${roomId}`, {
           config: {
             broadcast: { self: false },
@@ -49,19 +65,66 @@ class SignalingService {
           .on('broadcast', { event: 'cinemate-signal' }, (response: any) => {
             const data: SignalingPayload = response.payload;
             if (data && data.senderId !== this.senderId) {
+              console.log(`${this.getRoleTag()} [Signaling] Supabase received broadcast: type=${data.type} from ${data.senderId}`);
               this.dispatchMessage(data);
             }
           })
-          .subscribe((status: string) => {
-            console.log(`[Signaling] Supabase channel status: ${status}`);
+          .on('presence', { event: 'sync' }, () => {
+            const state = channel.presenceState();
+            console.log(`${this.getRoleTag()} [Signaling] Supabase presence sync: participants=${Object.keys(state).join(', ')}`);
+            this.dispatchPresence(state);
+          })
+          .on('presence', { event: 'join' }, ({ key, newPresences }: any) => {
+            console.log(`${this.getRoleTag()} [Signaling] Supabase presence join: participant=${key}`, newPresences);
+            const state = channel.presenceState();
+            this.dispatchPresence(state);
+          })
+          .on('presence', { event: 'leave' }, ({ key, leftPresences }: any) => {
+            console.log(`${this.getRoleTag()} [Signaling] Supabase presence leave: participant=${key}`, leftPresences);
+            const state = channel.presenceState();
+            this.dispatchPresence(state);
+          })
+          .subscribe(async (status: string) => {
+            console.log(`${this.getRoleTag()} [Signaling] Supabase channel status: ${status}`);
             if (status === 'SUBSCRIBED') {
               this.isConnected = true;
+              this.isSupabaseSubscribed = true;
+
+              // Track self presence in room
+              try {
+                await channel.track({
+                  id: this.senderId,
+                  role: this.userRole,
+                  timestamp: Date.now(),
+                });
+              } catch (err) {
+                console.warn(`${this.getRoleTag()} [Signaling] Could not track presence:`, err);
+              }
+
+              // Flush buffered outgoing messages sent before SUBSCRIBED
+              if (this.outgoingQueue.length > 0) {
+                console.log(`${this.getRoleTag()} [Signaling] Flushing ${this.outgoingQueue.length} queued messages to Supabase`);
+                while (this.outgoingQueue.length > 0) {
+                  const queuedMsg = this.outgoingQueue.shift()!;
+                  try {
+                    channel.send({
+                      type: 'broadcast',
+                      event: 'cinemate-signal',
+                      payload: queuedMsg,
+                    });
+                  } catch (e) {
+                    console.error(`${this.getRoleTag()} [Signaling] Error flushing queued message:`, e);
+                  }
+                }
+              }
+            } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+              this.isSupabaseSubscribed = false;
             }
           });
 
         this.supabaseChannel = channel;
       } catch (err) {
-        console.warn('[Signaling] Supabase channel initialization failed', err);
+        console.warn(`${this.getRoleTag()} [Signaling] Supabase channel initialization failed`, err);
       }
     }
 
@@ -91,15 +154,16 @@ class SignalingService {
         try {
           const data: SignalingPayload = JSON.parse(event.data);
           if (data && data.senderId !== this.senderId) {
+            console.log(`${this.getRoleTag()} [Signaling] SSE bridge received: type=${data.type}`);
             this.dispatchMessage(data);
           }
-        } catch (e) {
+        } catch {
           // Ignore heartbeats / ping comments
         }
       };
 
       source.onopen = () => {
-        console.log('[Signaling] Connected to local server signaling bridge');
+        console.log(`${this.getRoleTag()} [Signaling] Connected to local server signaling bridge`);
         this.isConnected = true;
       };
 
@@ -109,7 +173,7 @@ class SignalingService {
 
       this.sseSource = source;
     } catch (err) {
-      console.warn('[Signaling] Could not init SSE bridge', err);
+      console.warn(`${this.getRoleTag()} [Signaling] Could not init SSE bridge`, err);
     }
   }
 
@@ -118,7 +182,7 @@ class SignalingService {
       if (this.localBroadcastChannel) {
         try {
           this.localBroadcastChannel.close();
-        } catch (e) {
+        } catch {
           // Ignore
         }
       }
@@ -127,12 +191,13 @@ class SignalingService {
         this.localBroadcastChannel.onmessage = (event: MessageEvent) => {
           const data: SignalingPayload = event.data;
           if (data && data.senderId !== this.senderId) {
+            console.log(`${this.getRoleTag()} [Signaling] BroadcastChannel received: type=${data.type}`);
             this.dispatchMessage(data);
           }
         };
         this.isConnected = true;
       } catch (e) {
-        console.warn('[Signaling] BroadcastChannel setup failed', e);
+        console.warn(`${this.getRoleTag()} [Signaling] BroadcastChannel setup failed`, e);
       }
     }
   }
@@ -171,6 +236,8 @@ class SignalingService {
       timestamp: Date.now(),
     };
 
+    console.log(`${this.getRoleTag()} [Signaling] Sending message: type=${type}`);
+
     // Mark as seen locally to prevent reflection
     this.seenMessages.add(messageId);
 
@@ -183,20 +250,26 @@ class SignalingService {
       }).catch(() => {
         // Silently catch if not on local dev server
       });
-    } catch (e) {
+    } catch {
       // Ignore
     }
 
     // 2. Broadcast via Supabase if active
     if (this.supabaseChannel) {
-      try {
-        this.supabaseChannel.send({
-          type: 'broadcast',
-          event: 'cinemate-signal',
-          payload: message,
-        });
-      } catch (err) {
-        console.error('[Signaling] Failed to send via Supabase channel', err);
+      if (this.isSupabaseSubscribed) {
+        try {
+          this.supabaseChannel.send({
+            type: 'broadcast',
+            event: 'cinemate-signal',
+            payload: message,
+          });
+        } catch (err) {
+          console.error(`${this.getRoleTag()} [Signaling] Failed to send via Supabase channel`, err);
+        }
+      } else {
+        // Queue message until channel is SUBSCRIBED
+        console.log(`${this.getRoleTag()} [Signaling] Channel not subscribed yet, queueing message: type=${type}`);
+        this.outgoingQueue.push(message);
       }
     }
 
@@ -205,7 +278,7 @@ class SignalingService {
       try {
         this.localBroadcastChannel.postMessage(message);
       } catch (err) {
-        console.error('[Signaling] Failed to post to BroadcastChannel', err);
+        console.error(`${this.getRoleTag()} [Signaling] Failed to post to BroadcastChannel`, err);
       }
     }
   }
@@ -228,7 +301,17 @@ class SignalingService {
       try {
         handler(message);
       } catch (err) {
-        console.error('[Signaling] Error in message handler', err);
+        console.error(`${this.getRoleTag()} [Signaling] Error in message handler:`, err);
+      }
+    });
+  }
+
+  private dispatchPresence(presenceState: Record<string, any[]>) {
+    this.presenceHandlers.forEach((handler) => {
+      try {
+        handler(presenceState);
+      } catch (err) {
+        console.error(`${this.getRoleTag()} [Signaling] Error in presence handler:`, err);
       }
     });
   }
@@ -240,7 +323,16 @@ class SignalingService {
     };
   }
 
+  public addPresenceListener(handler: PresenceHandler): () => void {
+    this.presenceHandlers.add(handler);
+    return () => {
+      this.presenceHandlers.delete(handler);
+    };
+  }
+
   public leaveRoom(): void {
+    console.log(`${this.getRoleTag()} [Signaling] Leaving room: ${this.roomId}`);
+
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
@@ -249,7 +341,7 @@ class SignalingService {
     if (this.sseSource) {
       try {
         this.sseSource.close();
-      } catch (e) {
+      } catch {
         // Ignore
       }
       this.sseSource = null;
@@ -257,8 +349,9 @@ class SignalingService {
 
     if (this.supabaseChannel) {
       try {
+        this.supabaseChannel.untrack().catch(() => {});
         this.supabaseChannel.unsubscribe();
-      } catch (e) {
+      } catch {
         // Ignore
       }
       this.supabaseChannel = null;
@@ -267,15 +360,18 @@ class SignalingService {
     if (this.localBroadcastChannel) {
       try {
         this.localBroadcastChannel.close();
-      } catch (e) {
+      } catch {
         // Ignore
       }
       this.localBroadcastChannel = null;
     }
 
     this.handlers.clear();
+    this.presenceHandlers.clear();
     this.seenMessages.clear();
+    this.outgoingQueue = [];
     this.isConnected = false;
+    this.isSupabaseSubscribed = false;
     this.roomId = '';
     this.senderId = '';
   }

@@ -216,6 +216,8 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     iceConnectionState: 'connected',
     signalingState: 'stable',
     isReconnecting: false,
+    step: 'idle',
+    stepMessage: 'Ready',
   });
 
   const webrtcManagerRef = useRef<WebRTCManager | null>(null);
@@ -403,12 +405,71 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [preferences.audioDucking, preferences.movieVolume]);
 
+  // Presence state tracking for peer discovery
+  const handlePresenceState = useCallback((presenceState: Record<string, any[]>) => {
+    const otherKeys = Object.keys(presenceState).filter((key) => key !== currentUser.id);
+    const tag = currentUser.role === 'host' ? '[HOST]' : '[GUEST]';
+    console.log(`${tag} [Context] Presence updated. Other peers in room:`, otherKeys);
+
+    if (otherKeys.length > 0) {
+      const peerKey = otherKeys[0];
+      const peerPresences = presenceState[peerKey];
+      if (peerPresences && peerPresences.length > 0) {
+        const peerData = peerPresences[0];
+        setFriendUser((prev) => {
+          if (!prev) {
+            return {
+              id: peerKey,
+              name: peerData.name || (currentUser.role === 'host' ? 'Guest' : 'Host'),
+              role: peerData.role || (currentUser.role === 'host' ? 'guest' : 'host'),
+              isReady: false,
+              cameraOn: true,
+              micOn: true,
+              speaking: false,
+              mood: 'Cozy',
+              joinedAt: peerData.timestamp || Date.now(),
+            };
+          }
+          return prev;
+        });
+
+        setConnectionStats((prev) => ({
+          ...prev,
+          step: currentUser.role === 'host' ? 'guest-joined' : 'exchanging-signaling',
+          stepMessage: currentUser.role === 'host' ? 'Guest joined room' : 'Connected to host',
+        }));
+      }
+    } else {
+      // No peer present
+      if (friendUser) {
+        console.log(`${tag} [Context] Peer disconnected from presence`);
+        setFriendUser(null);
+        setConnectionStats((prev) => ({
+          ...prev,
+          step: currentUser.role === 'host' ? 'waiting-for-guest' : 'reconnecting',
+          stepMessage: currentUser.role === 'host' ? 'Waiting for guest...' : 'Reconnecting to host...',
+        }));
+      }
+    }
+  }, [currentUser.id, currentUser.role, friendUser]);
+
   // Setup WebRTC and Signaling listeners
   const setupConnection = useCallback((currentRoom: Room, userRole: 'host' | 'guest') => {
-    // 1. Join Signaling
-    signalingService.joinRoom(currentRoom.id, currentUser.id, (msg) => {
-      handleSignalingMessage(msg);
-    });
+    const roleTag = userRole === 'host' ? '[HOST]' : '[GUEST]';
+    console.log(`${roleTag} [Context] Setting up connection for room ${currentRoom.id}`);
+
+    // 1. Join Signaling with presence support
+    signalingService.joinRoom(
+      currentRoom.id,
+      currentUser.id,
+      userRole,
+      (msg) => {
+        handleSignalingMessage(msg);
+      },
+      (presenceState) => {
+        handlePresenceState(presenceState);
+      }
+    );
 
     // 2. Initialize WebRTC
     const rtc = new WebRTCManager();
@@ -419,11 +480,11 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       userId: currentUser.id,
       isHost: userRole === 'host',
       onRemoteWebcamStream: (stream) => {
-        console.log('[Context] Received remote webcam stream');
+        console.log(`${roleTag} [Context] Received remote webcam stream`);
         setRemoteWebcamStream(stream);
       },
       onRemoteMovieStream: (stream) => {
-        console.log('[Context] Received remote movie stream for guest');
+        console.log(`${roleTag} [Context] Received remote movie stream`);
         setRemoteMovieStream(stream);
       },
       onDataChannelMessage: (data) => {
@@ -438,6 +499,13 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
       onSpeakingStateChange: (speaking) => {
         handleFriendSpeaking(speaking);
+      },
+      onStepChange: (step, stepMessage) => {
+        setConnectionStats((prev) => ({
+          ...prev,
+          step,
+          stepMessage,
+        }));
       },
     });
 
@@ -455,16 +523,18 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       roomName: currentRoom.name,
       settings: currentRoom.settings,
     });
-  }, [currentUser, handleFriendSpeaking]);
+  }, [currentUser, handleFriendSpeaking, handlePresenceState]);
 
   // Handle incoming signaling message
   const handleSignalingMessage = useCallback((msg: any) => {
     const { type, payload, senderId } = msg;
+    const roleTag = currentUser.role === 'host' ? '[HOST]' : '[GUEST]';
 
     switch (type) {
       case 'join': {
         // A peer joined
         const incomingUser = payload.user;
+        console.log(`${roleTag} [Context] Peer joined via signaling: ${incomingUser?.name} (${incomingUser?.role})`);
         setFriendUser({
           id: incomingUser.id,
           name: incomingUser.name,
@@ -476,6 +546,12 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           mood: incomingUser.mood || 'Cozy',
           joinedAt: Date.now(),
         });
+
+        setConnectionStats((prev) => ({
+          ...prev,
+          step: currentUser.role === 'host' ? 'guest-joined' : 'exchanging-signaling',
+          stepMessage: currentUser.role === 'host' ? 'Guest joined room' : 'Connected to host',
+        }));
 
         // Add system chat message
         setChatMessages((prev) => [
@@ -490,7 +566,7 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           },
         ]);
 
-        // If I am host, send my presence back to ensure two-way awareness
+        // If I am host, respond with my presence to ensure two-way synchronization
         if (currentUser.role === 'host') {
           signalingService.sendMessage('join', {
             user: {
@@ -517,17 +593,18 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           if (localVideoElRef.current) {
             webrtcManagerRef.current?.attachLocalMovieStream(localVideoElRef.current);
           }
-
-          // Negotiate with the newly joined peer
-          setTimeout(() => {
-            webrtcManagerRef.current?.initiateOffer();
-          }, 300);
         }
         break;
       }
 
       case 'leave': {
+        console.log(`${roleTag} [Context] Friend left room`);
         setFriendUser(null);
+        setConnectionStats((prev) => ({
+          ...prev,
+          step: currentUser.role === 'host' ? 'waiting-for-guest' : 'reconnecting',
+          stepMessage: currentUser.role === 'host' ? 'Waiting for guest...' : 'Host disconnected',
+        }));
         setChatMessages((prev) => [
           ...prev,
           {
@@ -780,7 +857,13 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       isReady: false,
     }));
     setPreferences((prev) => ({ ...prev, displayName, theme }));
+    setConnectionStats((prev) => ({
+      ...prev,
+      step: 'waiting-for-guest',
+      stepMessage: 'Room created. Waiting for guest to join...',
+    }));
 
+    console.log(`[HOST] [Context] Room created: ${roomId}. Role=host. Waiting for guest...`);
     setupConnection(newRoom, 'host');
     requestMediaPermissions();
     setCurrentView('lobby');
@@ -815,7 +898,13 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       isReady: false,
     }));
     setPreferences((prev) => ({ ...prev, displayName }));
+    setConnectionStats((prev) => ({
+      ...prev,
+      step: 'connecting-to-host',
+      stepMessage: 'Connecting to room...',
+    }));
 
+    console.log(`[GUEST] [Context] Joining room: ${cleanRoomId}. Role=guest. Connecting...`);
     setupConnection(newRoom, 'guest');
     await requestMediaPermissions();
     setCurrentView('lobby');
@@ -825,6 +914,8 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Leave Room
   const leaveRoom = () => {
+    const roleTag = currentUser.role === 'host' ? '[HOST]' : '[GUEST]';
+    console.log(`${roleTag} [Context] Leaving room: ${room?.id}`);
     signalingService.sendMessage('leave', { userId: currentUser.id });
     signalingService.leaveRoom();
     webrtcManagerRef.current?.destroy();
@@ -839,6 +930,11 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setLocalMovieMetadata(null);
     setRoom(null);
     setFriendUser(null);
+    setConnectionStats((prev) => ({
+      ...prev,
+      step: 'idle',
+      stepMessage: 'Disconnected',
+    }));
     setCurrentView('landing');
   };
 

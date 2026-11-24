@@ -2,7 +2,7 @@ export type RoomTheme = 'midnight' | 'purple' | 'cozy' | 'pink' | 'retro' | 'gal
 
 export type ParticipantRole = 'host' | 'guest';
 
-export type UserMood = 'Happy' | 'Excited' | 'Sleepy' | 'Emotional' | 'Scared' | 'Romantic' | 'Hungry' | 'Confused';
+export type UserMood = 'Happy' | 'Excited' | 'Sleepy' | 'Emotional' | 'Scared' | 'Romantic' | 'Hungry' | 'Confused' | 'Cozy';
 
 export interface Participant {
   id: string;
@@ -146,12 +146,26 @@ export interface UserPreferences {
 
 export type ConnectionQuality = 'excellent' | 'good' | 'fair' | 'poor' | 'disconnected';
 
+export type ConnectionStep =
+  | 'idle'
+  | 'creating-room'
+  | 'waiting-for-guest'
+  | 'guest-joined'
+  | 'connecting-to-host'
+  | 'exchanging-signaling'
+  | 'establishing-peer-connection'
+  | 'connected'
+  | 'reconnecting'
+  | 'failed';
+
 export interface ConnectionStats {
   quality: ConnectionQuality;
   latency: number; // ms
   iceConnectionState: RTCIceConnectionState | 'offline';
   signalingState: RTCSignalingState | 'offline';
   isReconnecting: boolean;
+  step: ConnectionStep;
+  stepMessage: string;
 }
 
 export interface SignalingPayload {

@@ -245,7 +245,11 @@ export const VideoPlayer: React.FC = () => {
       {/* Guest Waiting State if stream not yet flowing */}
       {!isHost && !hasLiveMovieTrack && (
         <div className="absolute inset-0 bg-[#0B0A10]/95 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center z-10 animate-fade-in">
-          {connectionStats.iceConnectionState === 'checking' || connectionStats.iceConnectionState === 'new' ? (
+          {connectionStats.iceConnectionState === 'checking' ||
+          connectionStats.iceConnectionState === 'new' ||
+          connectionStats.step === 'connecting-to-host' ||
+          connectionStats.step === 'exchanging-signaling' ||
+          connectionStats.step === 'establishing-peer-connection' ? (
             <>
               <div className="w-16 h-16 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center mb-4">
                 <Loader2 className="w-8 h-8 text-purple-300 animate-spin" />
@@ -254,14 +258,16 @@ export const VideoPlayer: React.FC = () => {
                 Connecting to Host...
               </h3>
               <p className="text-xs text-purple-200/70 mt-2 max-w-md leading-relaxed">
-                Establishing direct peer-to-peer WebRTC connection with your friend.
+                {connectionStats.stepMessage || 'Establishing direct peer-to-peer WebRTC connection with your friend.'}
               </p>
               <div className="mt-4 flex items-center gap-2 text-[11px] text-amber-300 font-medium bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full">
                 <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-                <span>WebRTC Connecting...</span>
+                <span>WebRTC Connecting: {connectionStats.step}</span>
               </div>
             </>
-          ) : connectionStats.iceConnectionState === 'failed' || connectionStats.iceConnectionState === 'disconnected' ? (
+          ) : connectionStats.iceConnectionState === 'failed' ||
+            connectionStats.iceConnectionState === 'disconnected' ||
+            connectionStats.step === 'failed' ? (
             <>
               <div className="w-16 h-16 rounded-full bg-rose-500/20 border border-rose-500/40 flex items-center justify-center mb-4 text-rose-400">
                 <AlertCircle className="w-8 h-8" />

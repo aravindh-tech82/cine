@@ -3,13 +3,35 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import type { IncomingMessage, ServerResponse } from 'http';
 
+interface SSEClient {
+  res: ServerResponse;
+  senderId: string;
+}
+
 function localSignalingPlugin(): Plugin {
   // Store connected SSE response streams by roomId
-  const rooms = new Map<string, Set<ServerResponse>>();
+  const rooms = new Map<string, Set<SSEClient>>();
 
   return {
     name: 'local-signaling-bridge',
     configureServer(server) {
+      // 15-second keep-alive interval to prevent Chrome from closing idle EventSource streams
+      const keepAliveInterval = setInterval(() => {
+        rooms.forEach((clients) => {
+          clients.forEach((client) => {
+            try {
+              client.res.write(': keep-alive\n\n');
+            } catch {
+              // Ignore broken client connections
+            }
+          });
+        });
+      }, 15000);
+
+      server.httpServer?.on('close', () => {
+        clearInterval(keepAliveInterval);
+      });
+
       server.middlewares.use((req: IncomingMessage, res: ServerResponse, next: () => void) => {
         if (!req.url) return next();
 
@@ -17,6 +39,7 @@ function localSignalingPlugin(): Plugin {
         if (req.method === 'GET' && req.url.startsWith('/api/signaling/events')) {
           const url = new URL(req.url, 'http://localhost');
           const roomId = url.searchParams.get('roomId');
+          const senderId = url.searchParams.get('senderId') || '';
 
           if (!roomId) {
             res.writeHead(400);
@@ -35,10 +58,11 @@ function localSignalingPlugin(): Plugin {
             rooms.set(roomId, new Set());
           }
           const roomClients = rooms.get(roomId)!;
-          roomClients.add(res);
+          const currentClient: SSEClient = { res, senderId };
+          roomClients.add(currentClient);
 
           req.on('close', () => {
-            roomClients.delete(res);
+            roomClients.delete(currentClient);
             if (roomClients.size === 0) rooms.delete(roomId);
           });
           return;
@@ -54,15 +78,19 @@ function localSignalingPlugin(): Plugin {
             try {
               const data = JSON.parse(body);
               const roomId = data.roomId;
+              const senderId = data.senderId;
 
               if (roomId && rooms.has(roomId)) {
                 const messageString = `data: ${JSON.stringify(data)}\n\n`;
                 const roomClients = rooms.get(roomId)!;
-                roomClients.forEach((clientRes) => {
-                  try {
-                    clientRes.write(messageString);
-                  } catch (e) {
-                    // Ignore broken client connection
+                // Forward message to all clients in room EXCEPT the sender
+                roomClients.forEach((client) => {
+                  if (client.senderId !== senderId) {
+                    try {
+                      client.res.write(messageString);
+                    } catch {
+                      // Ignore broken client connection
+                    }
                   }
                 });
               }

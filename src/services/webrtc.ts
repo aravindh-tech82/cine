@@ -1,4 +1,5 @@
 import { signalingService } from './signaling';
+import { ConnectionStep } from '../types';
 
 export interface WebRTCOptions {
   roomId: string;
@@ -9,6 +10,7 @@ export interface WebRTCOptions {
   onDataChannelMessage: (data: any) => void;
   onConnectionStateChange: (state: RTCPeerConnectionState) => void;
   onSpeakingStateChange?: (speaking: boolean) => void;
+  onStepChange?: (step: ConnectionStep, message: string) => void;
 }
 
 export class WebRTCManager {
@@ -60,6 +62,10 @@ export class WebRTCManager {
     this.loadCustomTurnConfig();
   }
 
+  private getRoleTag(): string {
+    return this.options?.isHost ? '[HOST]' : '[GUEST]';
+  }
+
   private loadCustomTurnConfig() {
     try {
       const stunServer = import.meta.env.VITE_STUN_SERVER;
@@ -90,13 +96,14 @@ export class WebRTCManager {
           });
         }
       }
-    } catch (e) {
+    } catch {
       // Ignore
     }
   }
 
   public init(options: WebRTCOptions) {
     this.options = options;
+    console.log(`${this.getRoleTag()} [WebRTC] Initializing WebRTCManager (roomId=${options.roomId}, isHost=${options.isHost})`);
     this.createPeerConnection();
 
     // Subscribe to signaling messages
@@ -106,9 +113,13 @@ export class WebRTCManager {
       try {
         switch (msg.type) {
           case 'sdp-offer':
+            console.log(`${this.getRoleTag()} [WebRTC] Received sdp-offer from peer`);
+            this.options?.onStepChange?.('establishing-peer-connection', 'Exchanging SDP Offer/Answer...');
             await this.handleOffer(msg.payload);
             break;
           case 'sdp-answer':
+            console.log(`${this.getRoleTag()} [WebRTC] Received sdp-answer from peer`);
+            this.options?.onStepChange?.('establishing-peer-connection', 'SDP Answer Received');
             await this.handleAnswer(msg.payload);
             break;
           case 'ice-candidate':
@@ -120,19 +131,24 @@ export class WebRTCManager {
           case 'join':
             // Peer is in the room
             this.peerJoined = true;
+            console.log(`${this.getRoleTag()} [WebRTC] Peer joined room.`);
             if (options.isHost) {
-              console.log('[WebRTC] Peer joined room, host initiating negotiation with existing tracks');
+              this.options?.onStepChange?.('guest-joined', 'Guest detected, initiating offer...');
               setTimeout(() => {
                 this.initiateOffer();
               }, 300);
+            } else {
+              this.options?.onStepChange?.('exchanging-signaling', 'Connected to host signaling channel');
             }
             break;
           case 'leave':
+            console.log(`${this.getRoleTag()} [WebRTC] Peer left room.`);
             this.peerJoined = false;
+            this.options?.onStepChange?.(options.isHost ? 'waiting-for-guest' : 'reconnecting', 'Peer disconnected');
             break;
         }
       } catch (err) {
-        console.error('[WebRTC] Signaling error handling msg:', msg.type, err);
+        console.error(`${this.getRoleTag()} [WebRTC] Signaling error handling msg: ${msg.type}`, err);
       }
     });
   }
@@ -141,7 +157,7 @@ export class WebRTCManager {
     if (this.pc) {
       try {
         this.pc.close();
-      } catch (e) {
+      } catch {
         // Ignore
       }
     }
@@ -153,16 +169,42 @@ export class WebRTCManager {
 
     pc.onicecandidate = (event) => {
       if (event.candidate && this.options) {
+        console.log(`${this.getRoleTag()} [WebRTC] Local ICE candidate generated: type=${event.candidate.type}, protocol=${event.candidate.protocol}`);
         signalingService.sendMessage('ice-candidate', event.candidate.toJSON());
       }
     };
 
+    pc.onicecandidateerror = (event: any) => {
+      console.warn(`${this.getRoleTag()} [WebRTC] ICE candidate error:`, event.errorCode, event.errorText);
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log(`${this.getRoleTag()} [WebRTC] ICE connection state: ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        this.options?.onStepChange?.('connected', 'Peer Connected');
+      } else if (pc.iceConnectionState === 'failed') {
+        this.options?.onStepChange?.('failed', 'Connection failed, attempting ICE restart...');
+        this.restartIce();
+      } else if (pc.iceConnectionState === 'disconnected') {
+        this.options?.onStepChange?.('reconnecting', 'ICE connection temporarily disconnected');
+      }
+    };
+
+    pc.onsignalingstatechange = () => {
+      console.log(`${this.getRoleTag()} [WebRTC] Signaling state changed to: ${pc.signalingState}`);
+    };
+
     pc.onconnectionstatechange = () => {
-      console.log(`[WebRTC] Peer connection state: ${pc.connectionState}`);
+      console.log(`${this.getRoleTag()} [WebRTC] Peer connection state changed to: ${pc.connectionState}`);
       if (this.options) {
         this.options.onConnectionStateChange(pc.connectionState);
       }
-      if (pc.connectionState === 'failed') {
+      if (pc.connectionState === 'connected') {
+        this.options?.onStepChange?.('connected', 'Peer connection established');
+      } else if (pc.connectionState === 'connecting') {
+        this.options?.onStepChange?.('establishing-peer-connection', 'Establishing peer connection...');
+      } else if (pc.connectionState === 'failed') {
+        this.options?.onStepChange?.('failed', 'Peer connection failed');
         this.restartIce();
       }
     };
@@ -170,7 +212,7 @@ export class WebRTCManager {
     pc.ontrack = (event) => {
       const track = event.track;
       const stream = event.streams[0] || new MediaStream([track]);
-      console.log(`[WebRTC] ontrack fired: kind=${track.kind}, trackId=${track.id}, streamId=${stream.id}`);
+      console.log(`${this.getRoleTag()} [WebRTC] ontrack fired: kind=${track.kind}, trackId=${track.id}, streamId=${stream.id}`);
 
       let isMovie = false;
 
@@ -207,16 +249,17 @@ export class WebRTCManager {
       }
 
       if (isMovie) {
-        console.log('[WebRTC] Routing track to REMOTE MOVIE STREAM:', track.kind, track.id);
+        console.log(`${this.getRoleTag()} [WebRTC] MOVIE TRACK ROUTED to remote movie stream: kind=${track.kind}, id=${track.id}`);
         if (!this.remoteMovieStream.getTracks().some((t) => t.id === track.id)) {
           this.remoteMovieStream.addTrack(track);
         }
         if (this.options) {
           // Pass fresh MediaStream reference so React states and video element re-render
           this.options.onRemoteMovieStream(new MediaStream(this.remoteMovieStream.getTracks()));
+          this.options.onStepChange?.('connected', 'Movie Stream Connected');
         }
       } else {
-        console.log('[WebRTC] Routing track to REMOTE WEBCAM STREAM:', track.kind, track.id);
+        console.log(`${this.getRoleTag()} [WebRTC] WEBCAM TRACK ROUTED to remote webcam stream: kind=${track.kind}, id=${track.id}`);
         if (!this.remoteWebcamStream.getTracks().some((t) => t.id === track.id)) {
           this.remoteWebcamStream.addTrack(track);
         }
@@ -235,7 +278,7 @@ export class WebRTCManager {
       this.setupDataChannel(dc);
     } else {
       pc.ondatachannel = (event) => {
-        console.log('[WebRTC] Guest received datachannel:', event.channel.label);
+        console.log(`${this.getRoleTag()} [WebRTC] Received DataChannel: label=${event.channel.label}`);
         this.setupDataChannel(event.channel);
       };
     }
@@ -260,7 +303,7 @@ export class WebRTCManager {
       meta.webcamTrackIds.forEach((id: string) => this.knownWebcamTrackIds.add(id));
     }
 
-    console.log('[WebRTC] Received stream-meta:', {
+    console.log(`${this.getRoleTag()} [WebRTC] Received stream-meta:`, {
       movieStreamId: this.knownMovieStreamId,
       webcamStreamId: this.knownWebcamStreamId,
       movieTrackCount: this.knownMovieTrackIds.size,
@@ -287,7 +330,7 @@ export class WebRTCManager {
   private setupDataChannel(dc: RTCDataChannel) {
     this.dataChannel = dc;
     dc.onopen = () => {
-      console.log('[WebRTC] DataChannel open & ready for zero-latency sync');
+      console.log(`${this.getRoleTag()} [WebRTC] DataChannel open & ready for real-time synchronization`);
     };
     dc.onmessage = (event) => {
       try {
@@ -295,12 +338,12 @@ export class WebRTCManager {
         if (this.options) {
           this.options.onDataChannelMessage(parsed);
         }
-      } catch (e) {
-        console.error('[WebRTC] Failed to parse DataChannel message:', event.data);
+      } catch {
+        console.error(`${this.getRoleTag()} [WebRTC] Failed to parse DataChannel message:`, event.data);
       }
     };
-    dc.onerror = (err) => console.error('[WebRTC] DataChannel error:', err);
-    dc.onclose = () => console.log('[WebRTC] DataChannel closed');
+    dc.onerror = (err) => console.error(`${this.getRoleTag()} [WebRTC] DataChannel error:`, err);
+    dc.onclose = () => console.log(`${this.getRoleTag()} [WebRTC] DataChannel closed`);
   }
 
   public sendData(data: any): boolean {
@@ -309,7 +352,7 @@ export class WebRTCManager {
         this.dataChannel.send(JSON.stringify(data));
         return true;
       } catch (e) {
-        console.error('[WebRTC] Error sending on DataChannel:', e);
+        console.error(`${this.getRoleTag()} [WebRTC] Error sending on DataChannel:`, e);
       }
     }
     // Fallback through signaling service
@@ -320,29 +363,31 @@ export class WebRTCManager {
   public async initiateOffer() {
     if (!this.pc) return;
 
-    // If an unanswered local offer is pending, roll back so we can make a fresh offer with all tracks
+    // If an unanswered local offer is pending, roll back so we can make a clean offer with all tracks
     if (this.pc.signalingState === 'have-local-offer') {
       try {
-        console.log('[WebRTC] Rolling back pending local offer to create clean offer');
+        console.log(`${this.getRoleTag()} [WebRTC] Rolling back pending local offer to create clean offer`);
         await this.pc.setLocalDescription({ type: 'rollback' });
       } catch (e) {
-        console.warn('[WebRTC] Rollback note:', e);
+        console.warn(`${this.getRoleTag()} [WebRTC] Rollback note:`, e);
       }
     }
 
     if (this.pc.signalingState !== 'stable') {
-      console.log(`[WebRTC] Signaling state is '${this.pc.signalingState}', queueing renegotiation`);
+      console.log(`${this.getRoleTag()} [WebRTC] Signaling state is '${this.pc.signalingState}', queueing renegotiation`);
       this.needsRenegotiation = true;
       return;
     }
 
     try {
       this.isNegotiating = true;
+      console.log(`${this.getRoleTag()} [WebRTC] Creating SDP offer...`);
       const offer = await this.pc.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: true,
       });
       await this.pc.setLocalDescription(offer);
+      console.log(`${this.getRoleTag()} [WebRTC] Local description set to SDP offer`);
 
       const meta = {
         movieStreamId: this.localMovieStream?.id || null,
@@ -353,9 +398,9 @@ export class WebRTCManager {
 
       signalingService.sendMessage('sdp-offer', { offer, ...meta });
       signalingService.sendMessage('stream-meta', meta);
-      console.log('[WebRTC] Offer and stream metadata sent to peer');
+      console.log(`${this.getRoleTag()} [WebRTC] SDP offer and stream metadata sent to peer`);
     } catch (err) {
-      console.error('[WebRTC] Failed to create offer:', err);
+      console.error(`${this.getRoleTag()} [WebRTC] Failed to create offer:`, err);
       this.isNegotiating = false;
     }
   }
@@ -367,22 +412,27 @@ export class WebRTCManager {
     this.handleStreamMeta(payload);
 
     try {
-      console.log('[WebRTC] Handling offer...');
+      console.log(`${this.getRoleTag()} [WebRTC] Handling incoming SDP offer...`);
       if (this.pc.signalingState === 'have-local-offer') {
+        console.log(`${this.getRoleTag()} [WebRTC] Rolling back local offer before accepting remote offer`);
         await this.pc.setLocalDescription({ type: 'rollback' });
       }
 
       await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
+      console.log(`${this.getRoleTag()} [WebRTC] Remote description set to SDP offer`);
 
       // Flush queued candidates
       await this.drainPendingCandidates();
 
+      console.log(`${this.getRoleTag()} [WebRTC] Creating SDP answer...`);
       const answer = await this.pc.createAnswer();
       await this.pc.setLocalDescription(answer);
+      console.log(`${this.getRoleTag()} [WebRTC] Local description set to SDP answer`);
+
       signalingService.sendMessage('sdp-answer', { answer });
-      console.log('[WebRTC] Answer sent');
+      console.log(`${this.getRoleTag()} [WebRTC] SDP answer sent to host`);
     } catch (err) {
-      console.error('[WebRTC] Failed to handle offer:', err);
+      console.error(`${this.getRoleTag()} [WebRTC] Failed to handle offer:`, err);
     }
   }
 
@@ -391,13 +441,14 @@ export class WebRTCManager {
     const answer = payload.answer || payload;
 
     try {
-      console.log('[WebRTC] Handling answer...');
+      console.log(`${this.getRoleTag()} [WebRTC] Handling incoming SDP answer...`);
       if (this.pc.signalingState !== 'have-local-offer') {
-        console.warn(`[WebRTC] Received answer but signalingState is '${this.pc.signalingState}'`);
+        console.warn(`${this.getRoleTag()} [WebRTC] Received answer but signalingState is '${this.pc.signalingState}'`);
         return;
       }
 
       await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
+      console.log(`${this.getRoleTag()} [WebRTC] Remote description set to SDP answer. Signaling stable.`);
       this.isNegotiating = false;
 
       // Flush queued candidates
@@ -408,7 +459,7 @@ export class WebRTCManager {
         setTimeout(() => this.initiateOffer(), 150);
       }
     } catch (err) {
-      console.error('[WebRTC] Failed to handle answer:', err);
+      console.error(`${this.getRoleTag()} [WebRTC] Failed to handle answer:`, err);
       this.isNegotiating = false;
     }
   }
@@ -418,27 +469,32 @@ export class WebRTCManager {
 
     // If remote description is not set yet, queue candidate
     if (!this.pc || !this.pc.remoteDescription || !this.pc.remoteDescription.type) {
+      console.log(`${this.getRoleTag()} [WebRTC] Buffering remote ICE candidate (waiting for remote description)`);
       this.pendingCandidates.push(candidate);
       return;
     }
 
     try {
       await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+      console.log(`${this.getRoleTag()} [WebRTC] Added remote ICE candidate`);
     } catch (err) {
-      console.error('[WebRTC] Error adding ICE candidate:', err);
+      console.error(`${this.getRoleTag()} [WebRTC] Error adding ICE candidate:`, err);
     }
   }
 
   private async drainPendingCandidates() {
     if (!this.pc || !this.pc.remoteDescription || !this.pc.remoteDescription.type) return;
 
-    while (this.pendingCandidates.length > 0) {
-      const cand = this.pendingCandidates.shift();
-      if (cand) {
-        try {
-          await this.pc.addIceCandidate(new RTCIceCandidate(cand));
-        } catch (e) {
-          console.warn('[WebRTC] Error adding drained candidate', e);
+    if (this.pendingCandidates.length > 0) {
+      console.log(`${this.getRoleTag()} [WebRTC] Draining ${this.pendingCandidates.length} queued ICE candidates`);
+      while (this.pendingCandidates.length > 0) {
+        const cand = this.pendingCandidates.shift();
+        if (cand) {
+          try {
+            await this.pc.addIceCandidate(new RTCIceCandidate(cand));
+          } catch (e) {
+            console.warn(`${this.getRoleTag()} [WebRTC] Error adding drained candidate:`, e);
+          }
         }
       }
     }
@@ -446,13 +502,13 @@ export class WebRTCManager {
 
   public async restartIce() {
     if (!this.pc || !this.options) return;
-    console.log('[WebRTC] Restarting ICE...');
+    console.log(`${this.getRoleTag()} [WebRTC] Restarting ICE connection...`);
     try {
       const offer = await this.pc.createOffer({ iceRestart: true });
       await this.pc.setLocalDescription(offer);
       signalingService.sendMessage('sdp-offer', { offer });
     } catch (e) {
-      console.error('[WebRTC] Failed ICE restart:', e);
+      console.error(`${this.getRoleTag()} [WebRTC] Failed ICE restart:`, e);
     }
   }
 
@@ -467,7 +523,7 @@ export class WebRTCManager {
     this.webcamSenders.forEach((sender) => {
       try {
         this.pc?.removeTrack(sender);
-      } catch (e) {
+      } catch {
         // Ignore
       }
     });
@@ -478,8 +534,9 @@ export class WebRTCManager {
       try {
         const sender = this.pc!.addTrack(track, stream);
         this.webcamSenders.push(sender);
+        console.log(`${this.getRoleTag()} [WebRTC] Added webcam track to PC: kind=${track.kind}, id=${track.id}`);
       } catch (e) {
-        console.error('[WebRTC] Failed to add webcam track:', e);
+        console.error(`${this.getRoleTag()} [WebRTC] Failed to add webcam track:`, e);
       }
     });
 
@@ -513,7 +570,7 @@ export class WebRTCManager {
       }
 
       if (!capturedStream) {
-        console.warn('[WebRTC] captureStream is not supported by this browser');
+        console.warn(`${this.getRoleTag()} [WebRTC] video.captureStream() is not supported in this browser`);
         return null;
       }
 
@@ -539,7 +596,7 @@ export class WebRTCManager {
           }
           audioTrack = this.movieAudioDestination?.stream.getAudioTracks()[0];
         } catch (e) {
-          console.warn('[WebRTC] Web Audio movie audio source note:', e);
+          console.warn(`${this.getRoleTag()} [WebRTC] Web Audio movie audio source note:`, e);
         }
       }
 
@@ -549,11 +606,11 @@ export class WebRTCManager {
       if (audioTrack) movieStream.addTrack(audioTrack);
 
       this.localMovieStream = movieStream;
-      console.log(`[WebRTC] Local movie stream prepared: tracks=${movieStream.getTracks().length} (video=${!!videoTrack}, audio=${!!audioTrack})`);
+      console.log(`${this.getRoleTag()} [WebRTC] Local movie stream prepared: tracks=${movieStream.getTracks().length} (video=${!!videoTrack}, audio=${!!audioTrack})`);
 
       // 4. Listen for dynamically added audio tracks when playback starts
       capturedStream.onaddtrack = (event) => {
-        console.log('[WebRTC] Movie captureStream dynamically added track:', event.track.kind, event.track.id);
+        console.log(`${this.getRoleTag()} [WebRTC] captureStream dynamically added track: kind=${event.track.kind}, id=${event.track.id}`);
         if (event.track.kind === 'audio' && !this.localMovieStream?.getAudioTracks().length) {
           this.localMovieStream?.addTrack(event.track);
           if (this.pc) {
@@ -562,7 +619,7 @@ export class WebRTCManager {
               this.movieSenders.push(sender);
               this.initiateOffer();
             } catch (e) {
-              console.error('[WebRTC] Error adding dynamic movie audio track:', e);
+              console.error(`${this.getRoleTag()} [WebRTC] Error adding dynamic movie audio track:`, e);
             }
           }
         }
@@ -574,7 +631,7 @@ export class WebRTCManager {
       this.movieSenders.forEach((sender) => {
         try {
           this.pc?.removeTrack(sender);
-        } catch (e) {
+        } catch {
           // Ignore
         }
       });
@@ -585,9 +642,9 @@ export class WebRTCManager {
         try {
           const sender = this.pc!.addTrack(track, movieStream);
           this.movieSenders.push(sender);
-          console.log(`[WebRTC] Added movie track to PC: kind=${track.kind}, id=${track.id}`);
+          console.log(`${this.getRoleTag()} [WebRTC] Added movie track to PC: kind=${track.kind}, id=${track.id}`);
         } catch (err) {
-          console.error('[WebRTC] Error adding movie track:', err);
+          console.error(`${this.getRoleTag()} [WebRTC] Error adding movie track:`, err);
         }
       });
 
@@ -607,7 +664,7 @@ export class WebRTCManager {
 
       return movieStream;
     } catch (err) {
-      console.error('[WebRTC] Failed to capture movie stream:', err);
+      console.error(`${this.getRoleTag()} [WebRTC] Failed to capture movie stream:`, err);
       return null;
     }
   }
@@ -616,7 +673,7 @@ export class WebRTCManager {
     this.movieSenders.forEach((sender) => {
       try {
         this.pc?.removeTrack(sender);
-      } catch (e) {
+      } catch {
         // Ignore
       }
     });
@@ -669,7 +726,7 @@ export class WebRTCManager {
         }
       }, 150);
     } catch (err) {
-      console.warn('[WebRTC] Audio analysis setup error:', err);
+      console.warn(`${this.getRoleTag()} [WebRTC] Audio analysis setup error:`, err);
     }
   }
 
@@ -682,7 +739,7 @@ export class WebRTCManager {
     if (this.audioContext) {
       try {
         this.audioContext.close();
-      } catch (e) {
+      } catch {
         // Ignore
       }
       this.audioContext = null;
@@ -691,7 +748,7 @@ export class WebRTCManager {
     if (this.movieAudioContext) {
       try {
         this.movieAudioContext.close();
-      } catch (e) {
+      } catch {
         // Ignore
       }
       this.movieAudioContext = null;
@@ -707,7 +764,7 @@ export class WebRTCManager {
     if (this.dataChannel) {
       try {
         this.dataChannel.close();
-      } catch (e) {
+      } catch {
         // Ignore
       }
       this.dataChannel = null;
@@ -716,7 +773,7 @@ export class WebRTCManager {
     if (this.pc) {
       try {
         this.pc.close();
-      } catch (e) {
+      } catch {
         // Ignore
       }
       this.pc = null;

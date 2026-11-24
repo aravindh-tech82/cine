@@ -72,8 +72,18 @@ export const MovieRoomPage: React.FC = () => {
 
             {/* Connection Quality Pill */}
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.03] border border-white/10 text-[11px]">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-gray-300 capitalize">{connectionStats.quality}</span>
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  connectionStats.step === 'connected'
+                    ? 'bg-emerald-400 animate-pulse'
+                    : connectionStats.step === 'failed'
+                    ? 'bg-rose-500'
+                    : 'bg-amber-400 animate-ping'
+                }`}
+              />
+              <span className="text-gray-300 capitalize">
+                {connectionStats.step === 'connected' ? 'Connected' : connectionStats.stepMessage || connectionStats.step}
+              </span>
               <span className="text-purple-300 font-mono text-[10px] hidden sm:inline">
                 ({connectionStats.latency}ms)
               </span>
