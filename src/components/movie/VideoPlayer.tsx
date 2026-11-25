@@ -12,6 +12,7 @@ import {
   Film,
   Loader2,
   AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { formatTime } from '../../utils/helpers';
 
@@ -38,6 +39,7 @@ export const VideoPlayer: React.FC = () => {
     toggleCamera,
     toggleMic,
     room,
+    reconnectPeerConnection,
   } = useCineMate();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -246,10 +248,10 @@ export const VideoPlayer: React.FC = () => {
       {!isHost && !hasLiveMovieTrack && (
         <div className="absolute inset-0 bg-[#0B0A10]/95 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center z-10 animate-fade-in">
           {connectionStats.iceConnectionState === 'checking' ||
-          connectionStats.iceConnectionState === 'new' ||
-          connectionStats.step === 'connecting-to-host' ||
-          connectionStats.step === 'exchanging-signaling' ||
-          connectionStats.step === 'establishing-peer-connection' ? (
+          (connectionStats.iceConnectionState === 'new' && connectionStats.step !== 'connected') ||
+          (connectionStats.step === 'connecting-to-host' && connectionStats.iceConnectionState !== 'connected') ||
+          (connectionStats.step === 'exchanging-signaling' && connectionStats.iceConnectionState !== 'connected') ||
+          (connectionStats.step === 'establishing-peer-connection' && connectionStats.iceConnectionState !== 'connected') ? (
             <>
               <div className="w-16 h-16 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center mb-4">
                 <Loader2 className="w-8 h-8 text-purple-300 animate-spin" />
@@ -265,8 +267,23 @@ export const VideoPlayer: React.FC = () => {
                 <span>WebRTC Connecting: {connectionStats.step}</span>
               </div>
             </>
+          ) : connectionStats.iceConnectionState === 'disconnected' ? (
+            <>
+              <div className="w-16 h-16 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center mb-4">
+                <Loader2 className="w-8 h-8 text-amber-300 animate-spin" />
+              </div>
+              <h3 className="font-heading font-bold text-lg text-white">
+                Reconnecting Stream...
+              </h3>
+              <p className="text-xs text-purple-200/70 mt-2 max-w-md leading-relaxed">
+                Network connection is momentarily recovering. Restoring direct WebRTC stream...
+              </p>
+              <div className="mt-4 flex items-center gap-2 text-[11px] text-amber-300 font-medium bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                <span>Reconnecting WebRTC Channel</span>
+              </div>
+            </>
           ) : connectionStats.iceConnectionState === 'failed' ||
-            connectionStats.iceConnectionState === 'disconnected' ||
             connectionStats.step === 'failed' ? (
             <>
               <div className="w-16 h-16 rounded-full bg-rose-500/20 border border-rose-500/40 flex items-center justify-center mb-4 text-rose-400">
@@ -278,9 +295,18 @@ export const VideoPlayer: React.FC = () => {
               <p className="text-xs text-purple-200/70 mt-2 max-w-md leading-relaxed">
                 Could not connect to the host's browser. Checking network connectivity...
               </p>
-              <div className="mt-4 flex items-center gap-2 text-[11px] text-rose-400 font-medium bg-rose-500/10 border border-rose-500/20 px-3 py-1 rounded-full">
-                <span className="w-2 h-2 rounded-full bg-rose-400" />
-                <span>Connection Failed</span>
+              <div className="mt-4 flex flex-col items-center gap-3">
+                <div className="flex items-center gap-2 text-[11px] text-rose-400 font-medium bg-rose-500/10 border border-rose-500/20 px-3 py-1 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-rose-400" />
+                  <span>Connection Failed</span>
+                </div>
+                <button
+                  onClick={reconnectPeerConnection}
+                  className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-lg shadow-purple-600/30 transition-all flex items-center gap-2 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Retry Peer Connection</span>
+                </button>
               </div>
             </>
           ) : (
@@ -294,9 +320,18 @@ export const VideoPlayer: React.FC = () => {
               <p className="text-xs text-purple-200/70 mt-2 max-w-md leading-relaxed">
                 {friendUser ? friendUser.name : 'Your host'} is in the cinema room. Once they press Play, the movie will stream directly in real time 🍿
               </p>
-              <div className="mt-4 flex items-center gap-2 text-[11px] text-purple-300 font-medium bg-purple-500/10 border border-purple-500/20 px-3 py-1 rounded-full">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span>Peer Connected · Waiting for Host to Press Play</span>
+              <div className="mt-4 flex flex-col items-center gap-3">
+                <div className="flex items-center gap-2 text-[11px] text-purple-300 font-medium bg-purple-500/10 border border-purple-500/20 px-3 py-1 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Peer Connected · Ready for Playback</span>
+                </div>
+                <button
+                  onClick={playMovie}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-xs font-semibold shadow-lg shadow-purple-600/30 flex items-center gap-2 cursor-pointer transition-all hover:scale-105"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Request Host to Start Movie 🍿</span>
+                </button>
               </div>
             </>
           )}

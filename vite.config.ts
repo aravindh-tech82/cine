@@ -11,6 +11,7 @@ interface SSEClient {
 function localSignalingPlugin(): Plugin {
   // Store connected SSE response streams by roomId
   const rooms = new Map<string, Set<SSEClient>>();
+  const roomHistory = new Map<string, any[]>();
 
   return {
     name: 'local-signaling-bridge',
@@ -61,9 +62,26 @@ function localSignalingPlugin(): Plugin {
           const currentClient: SSEClient = { res, senderId };
           roomClients.add(currentClient);
 
+          // Replay persistent room announcements (join, movie-selected) to newly connected peer
+          if (roomHistory.has(roomId)) {
+            const history = roomHistory.get(roomId)!;
+            history.forEach((msg) => {
+              if (msg.senderId !== senderId && (msg.type === 'join' || msg.type === 'movie-selected')) {
+                try {
+                  res.write(`data: ${JSON.stringify(msg)}\n\n`);
+                } catch {
+                  // Ignore
+                }
+              }
+            });
+          }
+
           req.on('close', () => {
             roomClients.delete(currentClient);
-            if (roomClients.size === 0) rooms.delete(roomId);
+            if (roomClients.size === 0) {
+              rooms.delete(roomId);
+              roomHistory.delete(roomId);
+            }
           });
           return;
         }
@@ -79,6 +97,22 @@ function localSignalingPlugin(): Plugin {
               const data = JSON.parse(body);
               const roomId = data.roomId;
               const senderId = data.senderId;
+
+              // Store persistent room messages
+              if (roomId && (data.type === 'join' || data.type === 'movie-selected')) {
+                if (!roomHistory.has(roomId)) {
+                  roomHistory.set(roomId, []);
+                }
+                const history = roomHistory.get(roomId)!;
+                const existingIdx = history.findIndex(
+                  (m) => m.senderId === senderId && m.type === data.type
+                );
+                if (existingIdx !== -1) {
+                  history[existingIdx] = data;
+                } else {
+                  history.push(data);
+                }
+              }
 
               if (roomId && rooms.has(roomId)) {
                 const messageString = `data: ${JSON.stringify(data)}\n\n`;

@@ -59,7 +59,7 @@ export function getSupabaseClient(): SupabaseClient | null {
     cachedClient = createClient(config.url, config.anonKey, {
       realtime: {
         params: {
-          eventsPerSecond: 20,
+          eventsPerSecond: 40,
         },
       },
     });

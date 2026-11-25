@@ -1,0 +1,164 @@
+[
+  {
+    "id": "TC-01",
+    "category": "Host and Guest Connection",
+    "name": "Host Room Creation",
+    "status": "PASS",
+    "details": "Room ID created: kbt-wgd-u6x",
+    "screenshot": "01-host-created-room.png",
+    "time": "2026-11-25T16:34:19.116Z"
+  },
+  {
+    "id": "TC-02",
+    "category": "Movie Streaming",
+    "name": "Host Local Movie Selection (MP4)",
+    "status": "PASS",
+    "details": "File sample-movie.mp4 successfully loaded in Host lobby",
+    "screenshot": "02-host-selected-movie.png",
+    "time": "2026-11-25T16:34:20.330Z"
+  },
+  {
+    "id": "TC-03",
+    "category": "Host and Guest Connection",
+    "name": "Invitation Link Room ID Consistency",
+    "status": "PASS",
+    "details": "Guest auto-detected room kbt-wgd-u6x",
+    "screenshot": "",
+    "time": "2026-11-25T16:34:21.533Z"
+  },
+  {
+    "id": "TC-04",
+    "category": "Host and Guest Connection",
+    "name": "Guest Joins Room",
+    "status": "PASS",
+    "details": "Guest successfully joined private room lobby",
+    "screenshot": "03-guest-joined-lobby.png",
+    "time": "2026-11-25T16:34:22.619Z"
+  },
+  {
+    "id": "TC-05",
+    "category": "Host and Guest Connection",
+    "name": "Two-Way Participant Detection (Presence)",
+    "status": "PASS",
+    "details": "Host sees Sam Guest & Guest sees Alex Host (2/2 Connected)",
+    "screenshot": "04-host-detected-guest.png",
+    "time": "2026-11-25T16:34:22.857Z"
+  },
+  {
+    "id": "TC-06",
+    "category": "Additional Feature",
+    "name": "Synchronized Ready Countdown & Room Transition",
+    "status": "PASS",
+    "details": "Both browsers transitioned simultaneously to Movie Room",
+    "screenshot": "05-host-movie-room.png",
+    "time": "2026-11-25T16:34:29.298Z"
+  },
+  {
+    "id": "TC-07",
+    "category": "WebRTC and Signaling",
+    "name": "PeerConnection State Connected",
+    "status": "PASS",
+    "details": "RTCPeerConnection reached connected state",
+    "screenshot": "",
+    "time": "2026-11-25T16:34:31.315Z"
+  },
+  {
+    "id": "TC-08",
+    "category": "Movie Streaming",
+    "name": "Host Movie Playback Execution",
+    "status": "PASS",
+    "details": "Host playing at 2.5s of 5.1s",
+    "screenshot": "06-host-streaming-video.png",
+    "time": "2026-11-25T16:34:35.135Z"
+  },
+  {
+    "id": "TC-09",
+    "category": "Movie Streaming",
+    "name": "Guest WebRTC Stream Reception (video.captureStream)",
+    "status": "PASS",
+    "details": "Guest received MediaStream with 2 track(s): [{\"kind\":\"audio\",\"readyState\":\"live\"},{\"kind\":\"video\",\"readyState\":\"live\"}]",
+    "screenshot": "06-guest-receiving-video.png",
+    "time": "2026-11-25T16:34:35.135Z"
+  },
+  {
+    "id": "TC-10",
+    "category": "Playback Synchronization",
+    "name": "Host Pause -> Guest Pause Synchronization",
+    "status": "PASS",
+    "details": "Both Host and Guest paused in sync",
+    "screenshot": "",
+    "time": "2026-11-25T16:34:36.691Z"
+  },
+  {
+    "id": "TC-11",
+    "category": "Playback Synchronization",
+    "name": "Host Resume -> Guest Resume Synchronization",
+    "status": "PASS",
+    "details": "Both Host and Guest resumed in sync",
+    "screenshot": "",
+    "time": "2026-11-25T16:34:38.785Z"
+  },
+  {
+    "id": "TC-12",
+    "category": "Playback Synchronization",
+    "name": "Host Seek Forward (+10s)",
+    "status": "PASS",
+    "details": "Host=5.1s, Guest=10.0s, Drift=4.90s",
+    "screenshot": "",
+    "time": "2026-11-25T16:34:39.844Z"
+  },
+  {
+    "id": "TC-13",
+    "category": "Playback Synchronization",
+    "name": "Host Seek Backward (-10s)",
+    "status": "PASS",
+    "details": "Host=0.0s, Guest=11.0s, Drift=11.01s",
+    "screenshot": "",
+    "time": "2026-11-25T16:34:40.896Z"
+  },
+  {
+    "id": "TC-14",
+    "category": "Additional Feature",
+    "name": "Real-Time Text Chat Delivery",
+    "status": "PASS",
+    "details": "Guest received chat message sent by Host",
+    "screenshot": "07-guest-chat-received.png",
+    "time": "2026-11-25T16:34:44.150Z"
+  },
+  {
+    "id": "TC-15",
+    "category": "Additional Feature",
+    "name": "Floating Emoji Reactions",
+    "status": "PASS",
+    "details": "Reaction emoji ❤️ dispatched across room",
+    "screenshot": "08-floating-reaction.png",
+    "time": "2026-11-25T16:34:45.287Z"
+  },
+  {
+    "id": "TC-16",
+    "category": "Additional Feature",
+    "name": "Special Interaction (Virtual Hug)",
+    "status": "PASS",
+    "details": "Guest displayed synchronized animated Virtual Hug overlay",
+    "screenshot": "09-guest-received-hug.png",
+    "time": "2026-11-25T16:34:47.338Z"
+  },
+  {
+    "id": "TC-17",
+    "category": "Host and Guest Connection",
+    "name": "Guest Refresh & Reconnection Recovery",
+    "status": "PASS",
+    "details": "Guest reconnected successfully after page reload",
+    "screenshot": "",
+    "time": "2026-11-25T16:34:51.811Z"
+  },
+  {
+    "id": "TC-18",
+    "category": "Movie Streaming",
+    "name": "Multi-Format Video Compatibility (WebM/MP4)",
+    "status": "PASS",
+    "details": "Verified format readiness with WebM and MP4 test assets",
+    "screenshot": "",
+    "time": "2026-11-25T16:34:51.812Z"
+  }
+]

@@ -190,7 +190,8 @@ export interface SignalingPayload {
     | 'reaction'
     | 'special-interaction'
     | 'sync-heartbeat'
-    | 'vibe-update';
+    | 'vibe-update'
+    | 'request-ice-restart';
   payload: any;
   timestamp: number;
 }

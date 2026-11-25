@@ -97,6 +97,7 @@ interface CineMateContextType {
   preferences: UserPreferences;
   updatePreferences: (updates: Partial<UserPreferences>) => void;
   connectionStats: ConnectionStats;
+  reconnectPeerConnection: () => void;
 }
 
 const CineMateContext = createContext<CineMateContextType | null>(null);
@@ -150,6 +151,13 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   });
   const [friendUser, setFriendUser] = useState<Participant | null>(null);
 
+  const currentUserRef = useRef<Participant>(currentUser);
+  const userRoleRef = useRef<'host' | 'guest'>('host');
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
   // Pre-Movie Countdown
   const [isCountdownActive, setIsCountdownActive] = useState(false);
   const [countdownSeconds, setCountdownSeconds] = useState(3);
@@ -167,6 +175,7 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [remoteMovieStream, setRemoteMovieStream] = useState<MediaStream | null>(null);
   const [remoteAudioBlocked, setRemoteAudioBlocked] = useState(false);
   const localVideoElRef = useRef<HTMLVideoElement | null>(null);
+  const attachedVideoElRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoElRef = useRef<HTMLVideoElement | null>(null);
   const movieNightStartTimeRef = useRef<number>(Date.now());
   const playMovieRef = useRef<() => void>(() => {});
@@ -407,8 +416,8 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Presence state tracking for peer discovery
   const handlePresenceState = useCallback((presenceState: Record<string, any[]>) => {
-    const otherKeys = Object.keys(presenceState).filter((key) => key !== currentUser.id);
-    const tag = currentUser.role === 'host' ? '[HOST]' : '[GUEST]';
+    const otherKeys = Object.keys(presenceState).filter((key) => key !== currentUserRef.current.id);
+    const tag = userRoleRef.current === 'host' ? '[HOST]' : '[GUEST]';
     console.log(`${tag} [Context] Presence updated. Other peers in room:`, otherKeys);
 
     if (otherKeys.length > 0) {
@@ -420,8 +429,8 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           if (!prev) {
             return {
               id: peerKey,
-              name: peerData.name || (currentUser.role === 'host' ? 'Guest' : 'Host'),
-              role: peerData.role || (currentUser.role === 'host' ? 'guest' : 'host'),
+              name: peerData.name || (userRoleRef.current === 'host' ? 'Guest' : 'Host'),
+              role: peerData.role || (userRoleRef.current === 'host' ? 'guest' : 'host'),
               isReady: false,
               cameraOn: true,
               micOn: true,
@@ -509,32 +518,34 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
     });
 
-    // Send join announcement
+    // Send join announcement with fresh ref data
     signalingService.sendMessage('join', {
       user: {
-        id: currentUser.id,
-        name: currentUser.name,
+        id: currentUserRef.current.id,
+        name: currentUserRef.current.name,
         role: userRole,
-        isReady: currentUser.isReady,
-        cameraOn: currentUser.cameraOn,
-        micOn: currentUser.micOn,
-        mood: currentUser.mood,
+        isReady: currentUserRef.current.isReady,
+        cameraOn: currentUserRef.current.cameraOn,
+        micOn: currentUserRef.current.micOn,
+        mood: currentUserRef.current.mood,
       },
       roomName: currentRoom.name,
       settings: currentRoom.settings,
     });
-  }, [currentUser, handleFriendSpeaking, handlePresenceState]);
+  }, [handleFriendSpeaking, handlePresenceState]);
 
   // Handle incoming signaling message
   const handleSignalingMessage = useCallback((msg: any) => {
     const { type, payload, senderId } = msg;
-    const roleTag = currentUser.role === 'host' ? '[HOST]' : '[GUEST]';
+    const roleTag = userRoleRef.current === 'host' ? '[HOST]' : '[GUEST]';
 
     switch (type) {
       case 'join': {
         // A peer joined
         const incomingUser = payload.user;
-        console.log(`${roleTag} [Context] Peer joined via signaling: ${incomingUser?.name} (${incomingUser?.role})`);
+        if (!incomingUser || incomingUser.id === currentUserRef.current.id) return;
+
+        console.log(`${roleTag} [Context] Peer joined via signaling: ${incomingUser.name} (${incomingUser.role})`);
         setFriendUser({
           id: incomingUser.id,
           name: incomingUser.name,
@@ -549,8 +560,8 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         setConnectionStats((prev) => ({
           ...prev,
-          step: currentUser.role === 'host' ? 'guest-joined' : 'exchanging-signaling',
-          stepMessage: currentUser.role === 'host' ? 'Guest joined room' : 'Connected to host',
+          step: userRoleRef.current === 'host' ? 'guest-joined' : 'exchanging-signaling',
+          stepMessage: userRoleRef.current === 'host' ? 'Guest joined room' : 'Connected to host',
         }));
 
         // Add system chat message
@@ -566,17 +577,18 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           },
         ]);
 
-        // If I am host, respond with my presence to ensure two-way synchronization
-        if (currentUser.role === 'host') {
+        // Only Host responds when a Guest joins, to prevent endless join loops
+        if (userRoleRef.current === 'host' && incomingUser.role === 'guest') {
+          console.log('[HOST] [Context] Replying with host info to newly arrived guest');
           signalingService.sendMessage('join', {
             user: {
-              id: currentUser.id,
-              name: currentUser.name,
+              id: currentUserRef.current.id,
+              name: currentUserRef.current.name,
               role: 'host',
-              isReady: currentUser.isReady,
-              cameraOn: currentUser.cameraOn,
-              micOn: currentUser.micOn,
-              mood: currentUser.mood,
+              isReady: currentUserRef.current.isReady,
+              cameraOn: currentUserRef.current.cameraOn,
+              micOn: currentUserRef.current.micOn,
+              mood: currentUserRef.current.mood,
             },
           });
           // Also if movie is selected, notify the joining guest
@@ -602,8 +614,8 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setFriendUser(null);
         setConnectionStats((prev) => ({
           ...prev,
-          step: currentUser.role === 'host' ? 'waiting-for-guest' : 'reconnecting',
-          stepMessage: currentUser.role === 'host' ? 'Waiting for guest...' : 'Host disconnected',
+          step: userRoleRef.current === 'host' ? 'waiting-for-guest' : 'reconnecting',
+          stepMessage: userRoleRef.current === 'host' ? 'Waiting for guest...' : 'Host disconnected',
         }));
         setChatMessages((prev) => [
           ...prev,
@@ -621,6 +633,10 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       case 'ready-toggle': {
         setFriendUser((prev) => (prev ? { ...prev, isReady: payload.isReady } : null));
+        // If peer readied up and local user is already ready, initiate synchronized countdown
+        if (payload.isReady && currentUserRef.current.isReady) {
+          startSynchronizedCountdown();
+        }
         break;
       }
 
@@ -685,7 +701,7 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
 
       case 'sync-heartbeat': {
-        if (currentUser.role === 'guest') {
+        if (userRoleRef.current === 'guest') {
           setPlaybackState((prev) => ({
             ...prev,
             currentTime: payload.time !== undefined ? payload.time : prev.currentTime,
@@ -704,7 +720,7 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const handlePlaybackControlMessage = useCallback((data: any) => {
     if (!data || !data.action) return;
 
-    if (currentUser.role === 'host') {
+    if (userRoleRef.current === 'host') {
       switch (data.action) {
         case 'REQUEST_PLAY': {
           playMovieRef.current();
@@ -771,7 +787,7 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
       }
     }
-  }, [currentUser.role]);
+  }, []);
 
   // Synchronized countdown logic
   const startSynchronizedCountdown = () => {
@@ -819,8 +835,10 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Toggle Ready in Lobby
   const toggleReady = () => {
-    const newReady = !currentUser.isReady;
-    setCurrentUser((prev) => ({ ...prev, isReady: newReady }));
+    const newReady = !currentUserRef.current.isReady;
+    const updatedUser = { ...currentUserRef.current, isReady: newReady };
+    currentUserRef.current = updatedUser;
+    setCurrentUser(updatedUser);
     signalingService.sendMessage('ready-toggle', { isReady: newReady });
 
     // If friend is already ready, start countdown!
@@ -833,10 +851,20 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // Create Room
   const createRoom = (roomName: string, displayName: string, password?: string, theme: RoomTheme = 'midnight'): string => {
     const roomId = generateRoomId();
+    userRoleRef.current = 'host';
+    const updatedUser: Participant = {
+      ...currentUserRef.current,
+      name: displayName || currentUserRef.current.name,
+      role: 'host',
+      isReady: false,
+    };
+    currentUserRef.current = updatedUser;
+    setCurrentUser(updatedUser);
+
     const newRoom: Room = {
       id: roomId,
       name: roomName || `${displayName}'s Cinema`,
-      hostId: currentUser.id,
+      hostId: updatedUser.id,
       createdAt: Date.now(),
       settings: {
         maxParticipants: 2,
@@ -850,12 +878,6 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
 
     setRoom(newRoom);
-    setCurrentUser((prev) => ({
-      ...prev,
-      name: displayName || prev.name,
-      role: 'host',
-      isReady: false,
-    }));
     setPreferences((prev) => ({ ...prev, displayName, theme }));
     setConnectionStats((prev) => ({
       ...prev,
@@ -874,6 +896,16 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // Join Room
   const joinRoom = async (roomId: string, displayName: string, password?: string): Promise<boolean> => {
     const cleanRoomId = roomId.trim().toLowerCase();
+    userRoleRef.current = 'guest';
+    const updatedUser: Participant = {
+      ...currentUserRef.current,
+      name: displayName || currentUserRef.current.name,
+      role: 'guest',
+      isReady: false,
+    };
+    currentUserRef.current = updatedUser;
+    setCurrentUser(updatedUser);
+
     const newRoom: Room = {
       id: cleanRoomId,
       name: `CineMate Room`,
@@ -891,12 +923,6 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
 
     setRoom(newRoom);
-    setCurrentUser((prev) => ({
-      ...prev,
-      name: displayName || prev.name,
-      role: 'guest',
-      isReady: false,
-    }));
     setPreferences((prev) => ({ ...prev, displayName }));
     setConnectionStats((prev) => ({
       ...prev,
@@ -984,10 +1010,18 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         capture();
       }
 
-      el.addEventListener('loadedmetadata', capture);
-      el.addEventListener('canplay', capture);
-      el.addEventListener('play', capture);
+      if (attachedVideoElRef.current !== el) {
+        attachedVideoElRef.current = el;
+        el.addEventListener('loadedmetadata', capture, { once: true });
+        el.addEventListener('canplay', capture, { once: true });
+        el.addEventListener('play', capture);
+      }
     }
+  }, []);
+
+  const reconnectPeerConnection = useCallback(() => {
+    console.log('[Context] User requested peer connection reconnect...');
+    webrtcManagerRef.current?.reconnect();
   }, []);
 
   const safelyPlayRemoteVideo = useCallback((el: HTMLVideoElement) => {
@@ -1019,8 +1053,8 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     if (el && remoteMovieStream) {
       if (el.srcObject !== remoteMovieStream) {
         el.srcObject = remoteMovieStream;
+        safelyPlayRemoteVideo(el);
       }
-      safelyPlayRemoteVideo(el);
     }
   }, [remoteMovieStream, safelyPlayRemoteVideo]);
 
@@ -1029,14 +1063,14 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     if (remoteVideoElRef.current && remoteMovieStream) {
       if (remoteVideoElRef.current.srcObject !== remoteMovieStream) {
         remoteVideoElRef.current.srcObject = remoteMovieStream;
+        safelyPlayRemoteVideo(remoteVideoElRef.current);
       }
-      safelyPlayRemoteVideo(remoteVideoElRef.current);
     }
   }, [remoteMovieStream, safelyPlayRemoteVideo]);
 
   // Video Player Controls (Host authoritative, Guest request-based)
   const playMovie = useCallback(() => {
-    if (currentUser.role === 'host') {
+    if (userRoleRef.current === 'host') {
       const video = localVideoElRef.current;
       if (!video) return;
 
@@ -1063,10 +1097,10 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const sent = webrtcManagerRef.current?.sendData(payload);
       if (!sent) signalingService.sendMessage('playback-control', payload);
     }
-  }, [currentUser.role]);
+  }, []);
 
   const pauseMovie = useCallback(() => {
-    if (currentUser.role === 'host') {
+    if (userRoleRef.current === 'host') {
       const video = localVideoElRef.current;
       if (!video) return;
 
@@ -1089,10 +1123,10 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const sent = webrtcManagerRef.current?.sendData(payload);
       if (!sent) signalingService.sendMessage('playback-control', payload);
     }
-  }, [currentUser.role]);
+  }, []);
 
   const seekMovie = useCallback((time: number) => {
-    if (currentUser.role === 'host') {
+    if (userRoleRef.current === 'host') {
       const video = localVideoElRef.current;
       if (video) {
         video.currentTime = time;
@@ -1112,10 +1146,10 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const sent = webrtcManagerRef.current?.sendData(payload);
       if (!sent) signalingService.sendMessage('playback-control', payload);
     }
-  }, [currentUser.role]);
+  }, []);
 
   const skipMovie = useCallback((delta: number) => {
-    if (currentUser.role === 'host') {
+    if (userRoleRef.current === 'host') {
       const video = localVideoElRef.current;
       if (video) {
         const newTime = Math.max(0, Math.min(video.duration || 99999, video.currentTime + delta));
@@ -1125,7 +1159,7 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const newTime = Math.max(0, Math.min(playbackState.duration || 99999, playbackState.currentTime + delta));
       seekMovie(newTime);
     }
-  }, [currentUser.role, playbackState.duration, playbackState.currentTime, seekMovie]);
+  }, [playbackState.duration, playbackState.currentTime, seekMovie]);
 
   // Keep control refs synchronized
   useEffect(() => {
@@ -1149,7 +1183,7 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Heartbeat playback sync (host sends authoritative time to guest)
   useEffect(() => {
-    if (currentUser.role !== 'host') return;
+    if (userRoleRef.current !== 'host') return;
     const interval = setInterval(() => {
       if (localVideoElRef.current && playbackState.isPlaying) {
         const payload = {
@@ -1357,6 +1391,7 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         preferences,
         updatePreferences,
         connectionStats,
+        reconnectPeerConnection,
       }}
     >
       {children}

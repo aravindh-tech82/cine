@@ -1,0 +1,57 @@
+# ==========================================
+# CineMate 🍿 Render Deployment Blueprint
+# Docs: https://render.com/docs/blueprint-spec
+# ==========================================
+
+services:
+  - type: web
+    name: cinemate
+    runtime: static
+    buildCommand: npm run build
+    staticPublishPath: dist
+    pullRequestPreviewsEnabled: false
+
+    # Single Page Application (SPA) Client-Side Route Rewrites
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+    # Security Headers
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+
+    # Production Environment Variables
+    envVars:
+      # Supabase Project URL (e.g. https://your-project.supabase.co)
+      - key: VITE_SUPABASE_URL
+        sync: false
+
+      # Supabase Anon Publishable Key
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+
+      # Built-in High-Availability STUN Server
+      - key: VITE_STUN_SERVER
+        value: stun:stun.l.google.com:19302
+
+      # WebRTC TURN Relay Server (Optional for strict NAT / cellular networks)
+      - key: VITE_TURN_SERVER
+        sync: false
+
+      # WebRTC TURN Username
+      - key: VITE_TURN_USERNAME
+        sync: false
+
+      # WebRTC TURN Credential / Password
+      - key: VITE_TURN_CREDENTIAL
+        sync: false
+

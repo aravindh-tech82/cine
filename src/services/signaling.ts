@@ -17,6 +17,7 @@ class SignalingService {
   private isSupabaseSubscribed: boolean = false;
   private outgoingQueue: SignalingPayload[] = [];
   private pingInterval: any = null;
+  private supabaseReconnectTimeout: any = null;
   private currentLatency: number = 22;
   private seenMessages: Set<string> = new Set();
 
@@ -46,10 +47,12 @@ class SignalingService {
 
     console.log(`${this.getRoleTag()} [Signaling] Joining room: "${roomId}" as ${role} (id=${senderId})`);
 
-    // 1. Setup Local Server SSE Bridge (connects Normal + Incognito + different browsers on localhost)
-    this.setupLocalServerBridge(roomId, senderId);
+    // 1. Setup Local Server SSE Bridge (Development mode on localhost only)
+    if (import.meta.env.DEV) {
+      this.setupLocalServerBridge(roomId, senderId);
+    }
 
-    // 2. Setup Supabase if credentials are provided
+    // 2. Setup Supabase Realtime (Production Cloud Signaling Mechanism)
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
@@ -117,8 +120,15 @@ class SignalingService {
                   }
                 }
               }
-            } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+            } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
               this.isSupabaseSubscribed = false;
+              if (this.supabaseReconnectTimeout) clearTimeout(this.supabaseReconnectTimeout);
+              this.supabaseReconnectTimeout = setTimeout(() => {
+                if (this.supabaseChannel && !this.isSupabaseSubscribed) {
+                  console.log(`${this.getRoleTag()} [Signaling] Attempting to reconnect Supabase channel...`);
+                  this.supabaseChannel.subscribe();
+                }
+              }, 3000);
             }
           });
 
@@ -140,6 +150,8 @@ class SignalingService {
   }
 
   private setupLocalServerBridge(roomId: string, senderId: string) {
+    // Completely bypass SSE bridge in production; Supabase Realtime is the sole production transport
+    if (import.meta.env.PROD) return;
     if (typeof window === 'undefined' || !window.EventSource) return;
 
     try {
@@ -241,17 +253,19 @@ class SignalingService {
     // Mark as seen locally to prevent reflection
     this.seenMessages.add(messageId);
 
-    // 1. Local Server SSE Bridge (POST /api/signaling/send)
-    try {
-      fetch('/api/signaling/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(message),
-      }).catch(() => {
-        // Silently catch if not on local dev server
-      });
-    } catch {
-      // Ignore
+    // 1. Local Server SSE Bridge (POST /api/signaling/send) - Development only
+    if (import.meta.env.DEV) {
+      try {
+        fetch('/api/signaling/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(message),
+        }).catch(() => {
+          // Silently catch if not on local dev server
+        });
+      } catch {
+        // Ignore
+      }
     }
 
     // 2. Broadcast via Supabase if active
@@ -276,7 +290,8 @@ class SignalingService {
     // 3. Broadcast via BroadcastChannel
     if (this.localBroadcastChannel) {
       try {
-        this.localBroadcastChannel.postMessage(message);
+        const cloneableMsg = JSON.parse(JSON.stringify(message));
+        this.localBroadcastChannel.postMessage(cloneableMsg);
       } catch (err) {
         console.error(`${this.getRoleTag()} [Signaling] Failed to post to BroadcastChannel`, err);
       }
@@ -332,6 +347,11 @@ class SignalingService {
 
   public leaveRoom(): void {
     console.log(`${this.getRoleTag()} [Signaling] Leaving room: ${this.roomId}`);
+
+    if (this.supabaseReconnectTimeout) {
+      clearTimeout(this.supabaseReconnectTimeout);
+      this.supabaseReconnectTimeout = null;
+    }
 
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
