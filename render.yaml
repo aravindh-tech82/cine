@@ -35,13 +35,13 @@ services:
       - key: NPM_CONFIG_PRODUCTION
         value: "false"
 
-      # Supabase Project URL (e.g. https://your-project.supabase.co)
+      # Supabase Project URL (Production Cloud Realtime Signaling)
       - key: VITE_SUPABASE_URL
-        sync: false
+        value: https://fbbiqkutqbbwduztqczv.supabase.co
 
       # Supabase Anon Publishable Key
       - key: VITE_SUPABASE_ANON_KEY
-        sync: false
+        value: sb_publishable_MKq8FyPvotlCe6eH1rlKpw_g4QxKD4l
 
       # Built-in High-Availability STUN Server
       - key: VITE_STUN_SERVER

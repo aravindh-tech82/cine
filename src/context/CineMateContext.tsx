@@ -444,9 +444,14 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         setConnectionStats((prev) => ({
           ...prev,
-          step: currentUser.role === 'host' ? 'guest-joined' : 'exchanging-signaling',
-          stepMessage: currentUser.role === 'host' ? 'Guest joined room' : 'Connected to host',
+          step: userRoleRef.current === 'host' ? 'guest-joined' : 'exchanging-signaling',
+          stepMessage: userRoleRef.current === 'host' ? 'Guest joined room' : 'Connected to host',
         }));
+
+        // Trigger WebRTC offer from host if not yet started
+        if (userRoleRef.current === 'host' && webrtcManagerRef.current) {
+          webrtcManagerRef.current.handlePeerJoined();
+        }
       }
     } else {
       // No peer present
@@ -455,28 +460,40 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setFriendUser(null);
         setConnectionStats((prev) => ({
           ...prev,
-          step: currentUser.role === 'host' ? 'waiting-for-guest' : 'reconnecting',
-          stepMessage: currentUser.role === 'host' ? 'Waiting for guest...' : 'Reconnecting to host...',
+          step: userRoleRef.current === 'host' ? 'waiting-for-guest' : 'reconnecting',
+          stepMessage: userRoleRef.current === 'host' ? 'Waiting for guest...' : 'Reconnecting to host...',
         }));
       }
     }
-  }, [currentUser.id, currentUser.role, friendUser]);
+  }, [friendUser]);
 
   // Setup WebRTC and Signaling listeners
   const setupConnection = useCallback((currentRoom: Room, userRole: 'host' | 'guest') => {
     const roleTag = userRole === 'host' ? '[HOST]' : '[GUEST]';
     console.log(`${roleTag} [Context] Setting up connection for room ${currentRoom.id}`);
 
+    // Update browser URL query parameter so page reloads or shares maintain the room
+    try {
+      const currentUrl = new URL(window.location.href);
+      currentUrl.searchParams.set('room', currentRoom.id);
+      window.history.replaceState(null, '', currentUrl.toString());
+    } catch {
+      // Ignore
+    }
+
     // 1. Join Signaling with presence support
     signalingService.joinRoom(
       currentRoom.id,
-      currentUser.id,
+      currentUserRef.current.id,
       userRole,
       (msg) => {
         handleSignalingMessage(msg);
       },
       (presenceState) => {
         handlePresenceState(presenceState);
+      },
+      {
+        name: currentUserRef.current.name,
       }
     );
 
@@ -486,7 +503,7 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     rtc.init({
       roomId: currentRoom.id,
-      userId: currentUser.id,
+      userId: currentUserRef.current.id,
       isHost: userRole === 'host',
       onRemoteWebcamStream: (stream) => {
         console.log(`${roleTag} [Context] Received remote webcam stream`);
@@ -932,8 +949,14 @@ export const CineMateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     console.log(`[GUEST] [Context] Joining room: ${cleanRoomId}. Role=guest. Connecting...`);
     setupConnection(newRoom, 'guest');
-    await requestMediaPermissions();
+    
+    // Switch view to lobby immediately so user is not blocked on media device prompts
     setCurrentView('lobby');
+
+    // Request media permissions asynchronously without blocking the join flow
+    requestMediaPermissions().catch((err) => {
+      console.warn('Could not auto-start camera/mic on join:', err);
+    });
 
     return true;
   };

@@ -31,21 +31,34 @@ export const JoinRoomPage: React.FC = () => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const meterIntervalRef = useRef<any>(null);
 
-  // Auto-detect room ID from URL hash `#room=abc-123-xyz` or query params `?room=abc`
+  // Auto-detect room ID from URL query params `?room=abc` or hash `#room=abc`
   useEffect(() => {
-    const hash = window.location.hash;
-    if (hash.includes('room=')) {
-      const match = hash.match(/room=([a-zA-Z0-9\-_]+)/);
-      if (match && match[1]) {
-        setRoomId(match[1]);
-      }
-    } else {
+    const extractRoomId = () => {
+      // 1. Check query parameter: ?room=...
       const params = new URLSearchParams(window.location.search);
       const roomParam = params.get('room');
-      if (roomParam) {
-        setRoomId(roomParam);
+      if (roomParam && roomParam.trim()) {
+        setRoomId(roomParam.trim());
+        return;
       }
-    }
+
+      // 2. Check hash: #room=... or #/room/... or #abc-123
+      const hash = window.location.hash;
+      if (hash) {
+        const match = hash.match(/room=([a-zA-Z0-9\-_]+)/) || hash.match(/#\/?([a-zA-Z0-9\-_]+)/);
+        if (match && match[1] && match[1] !== 'join-room') {
+          setRoomId(match[1].trim());
+        }
+      }
+    };
+
+    extractRoomId();
+    window.addEventListener('hashchange', extractRoomId);
+    window.addEventListener('popstate', extractRoomId);
+    return () => {
+      window.removeEventListener('hashchange', extractRoomId);
+      window.removeEventListener('popstate', extractRoomId);
+    };
   }, []);
 
   // Initialize preview stream

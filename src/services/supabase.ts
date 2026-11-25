@@ -4,28 +4,38 @@ let cachedClient: SupabaseClient | null = null;
 let currentUrl: string = '';
 let currentKey: string = '';
 
+// Built-in Production Supabase Configuration (Cloud Signaling)
+const DEFAULT_SUPABASE_URL = 'https://fbbiqkutqbbwduztqczv.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_MKq8FyPvotlCe6eH1rlKpw_g4QxKD4l';
+
 export interface SupabaseConfig {
   url: string;
   anonKey: string;
 }
 
 export function getSupabaseConfig(): SupabaseConfig {
-  // Check localStorage first, then environment variables
+  // Check localStorage first, then environment variables, then built-in default
   try {
     const saved = localStorage.getItem('cinemate_supabase_config');
     if (saved) {
       const parsed = JSON.parse(saved);
       if (parsed.url && parsed.anonKey) {
-        return parsed;
+        return {
+          url: parsed.url.trim(),
+          anonKey: parsed.anonKey.trim(),
+        };
       }
     }
   } catch (e) {
     // Ignore error
   }
 
+  const envUrl = import.meta.env.VITE_SUPABASE_URL;
+  const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
   return {
-    url: import.meta.env.VITE_SUPABASE_URL || '',
-    anonKey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+    url: (envUrl && envUrl.trim()) || DEFAULT_SUPABASE_URL,
+    anonKey: (envKey && envKey.trim()) || DEFAULT_SUPABASE_ANON_KEY,
   };
 }
 

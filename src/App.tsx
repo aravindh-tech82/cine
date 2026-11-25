@@ -13,17 +13,23 @@ import { SummaryPage } from './pages/SummaryPage';
 const AppContent: React.FC = () => {
   const { currentView, setCurrentView } = useCineMate();
 
-  // Check URL hash or query params on initial load
+  // Check URL hash or query params on initial load and handle dynamic route changes
   useEffect(() => {
-    const hash = window.location.hash;
-    if (hash.includes('room=')) {
-      setCurrentView('join-room');
-    } else {
+    const handleUrlChange = () => {
+      const hash = window.location.hash;
       const params = new URLSearchParams(window.location.search);
-      if (params.get('room')) {
+      if (params.get('room') || hash.includes('room=')) {
         setCurrentView('join-room');
       }
-    }
+    };
+
+    handleUrlChange();
+    window.addEventListener('hashchange', handleUrlChange);
+    window.addEventListener('popstate', handleUrlChange);
+    return () => {
+      window.removeEventListener('hashchange', handleUrlChange);
+      window.removeEventListener('popstate', handleUrlChange);
+    };
   }, [setCurrentView]);
 
   return (

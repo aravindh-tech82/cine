@@ -27,7 +27,7 @@ export const MovieRoomPage: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [showInteractionsMenu, setShowInteractionsMenu] = useState(false);
 
-  const inviteUrl = `${window.location.origin}/#room=${room?.id || ''}`;
+  const inviteUrl = `${window.location.origin}/?room=${room?.id || ''}#room=${room?.id || ''}`;
 
   const handleCopyLink = () => {
     navigator.clipboard.writeText(inviteUrl);

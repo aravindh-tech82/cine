@@ -51,7 +51,7 @@ export const LobbyPage: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const inviteUrl = `${window.location.origin}/#room=${room?.id || ''}`;
+  const inviteUrl = `${window.location.origin}/?room=${room?.id || ''}#room=${room?.id || ''}`;
 
   const handleCopyLink = () => {
     navigator.clipboard.writeText(inviteUrl);

@@ -108,11 +108,18 @@ async function testProduction() {
     await hostPage.waitForSelector('text=sample-movie');
     console.log('✅ Host movie selected and thumbnail generated');
 
-    // 3. Guest joins via invite link
-    const inviteUrl = `http://127.0.0.1:4173/#room=${roomId}`;
+    // 3. Guest joins via query param invite link (?room=)
+    const inviteUrl = `http://127.0.0.1:4173/?room=${roomId}#room=${roomId}`;
     console.log(`[4/7] Guest navigating to invite link: ${inviteUrl}`);
     await guestPage.goto(inviteUrl);
     await guestPage.waitForSelector('input[placeholder="e.g. Sarah"]');
+
+    // Verify room ID was automatically populated into the input field
+    const guestRoomIdVal = await guestPage.inputValue('input[placeholder="e.g. abc-123-xyz"]');
+    console.log(`✅ Guest Room ID automatically pre-filled: "${guestRoomIdVal}"`);
+    if (guestRoomIdVal !== roomId) {
+      throw new Error(`Room ID mismatch! Expected "${roomId}", got "${guestRoomIdVal}"`);
+    }
     await guestPage.fill('input[placeholder="e.g. Sarah"]', 'Production Guest');
     await guestPage.click('button:has-text("Join Movie Night")');
     await guestPage.waitForSelector('text=Participants (2 max)');

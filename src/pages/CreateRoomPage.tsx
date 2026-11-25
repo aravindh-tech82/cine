@@ -27,8 +27,8 @@ export const CreateRoomPage: React.FC = () => {
   const [createdRoomId, setCreatedRoomId] = useState<string | null>(null);
 
   const previewLink = createdRoomId
-    ? `${window.location.origin}/#room=${createdRoomId}`
-    : `${window.location.origin}/#room=cinemate-preview`;
+    ? `${window.location.origin}/?room=${createdRoomId}#room=${createdRoomId}`
+    : `${window.location.origin}/?room=cinemate-preview#room=cinemate-preview`;
 
   useEffect(() => {
     if (previewLink) {

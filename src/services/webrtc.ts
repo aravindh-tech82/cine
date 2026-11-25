@@ -64,6 +64,16 @@ export class WebRTCManager {
     { urls: 'stun:stun4.l.google.com:19302' },
     // 2. Cloudflare STUN (port 3478 - global Anycast, high speed)
     { urls: 'stun:stun.cloudflare.com:3478' },
+    // 3. Free Public TURN Relay for Symmetric NAT traversal across mobile & Wi-Fi
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ];
 
   constructor() {
@@ -172,18 +182,7 @@ export class WebRTCManager {
             break;
           case 'join':
             // Peer is in the room
-            if (!this.peerJoined) {
-              this.peerJoined = true;
-              console.log(`${this.getRoleTag()} [WebRTC] Peer joined room.`);
-              if (options.isHost) {
-                this.options?.onStepChange?.('guest-joined', 'Guest detected, initiating offer...');
-                setTimeout(() => {
-                  this.initiateOffer();
-                }, 300);
-              } else {
-                this.options?.onStepChange?.('exchanging-signaling', 'Connected to host signaling channel');
-              }
-            }
+            this.handlePeerJoined();
             break;
           case 'leave':
             console.log(`${this.getRoleTag()} [WebRTC] Peer left room.`);
@@ -618,6 +617,27 @@ export class WebRTCManager {
           }
         }
       }
+    }
+  }
+
+  public handlePeerJoined() {
+    if (!this.peerJoined) {
+      this.peerJoined = true;
+      console.log(`${this.getRoleTag()} [WebRTC] Peer joined room.`);
+      if (this.options?.isHost) {
+        this.options?.onStepChange?.('guest-joined', 'Guest detected, initiating offer...');
+        setTimeout(() => {
+          this.initiateOffer();
+        }, 300);
+      } else {
+        this.options?.onStepChange?.('exchanging-signaling', 'Connected to host signaling channel');
+      }
+    } else if (this.options?.isHost && this.pc && this.pc.signalingState === 'stable' && this.pc.connectionState !== 'connected') {
+      // Re-trigger offer if connection is not yet established
+      console.log(`${this.getRoleTag()} [WebRTC] Peer is in room and PC is stable, ensuring offer is sent...`);
+      setTimeout(() => {
+        this.initiateOffer();
+      }, 200);
     }
   }
 

@@ -37,7 +37,8 @@ class SignalingService {
     senderId: string,
     role: 'host' | 'guest' = 'host',
     onMessage?: MessageHandler,
-    onPresence?: PresenceHandler
+    onPresence?: PresenceHandler,
+    metadata?: { name?: string }
   ): () => void {
     this.userRole = role;
     this.roomId = roomId;
@@ -45,7 +46,7 @@ class SignalingService {
     if (onMessage) this.handlers.add(onMessage);
     if (onPresence) this.presenceHandlers.add(onPresence);
 
-    console.log(`${this.getRoleTag()} [Signaling] Joining room: "${roomId}" as ${role} (id=${senderId})`);
+    console.log(`${this.getRoleTag()} [Signaling] Joining room: "${roomId}" as ${role} (id=${senderId}, name=${metadata?.name || 'anonymous'})`);
 
     // 1. Setup Local Server SSE Bridge (Development mode on localhost only)
     if (import.meta.env.DEV) {
@@ -98,6 +99,7 @@ class SignalingService {
                 await channel.track({
                   id: this.senderId,
                   role: this.userRole,
+                  name: metadata?.name || '',
                   timestamp: Date.now(),
                 });
               } catch (err) {
@@ -106,11 +108,12 @@ class SignalingService {
 
               // Flush buffered outgoing messages sent before SUBSCRIBED
               if (this.outgoingQueue.length > 0) {
-                console.log(`${this.getRoleTag()} [Signaling] Flushing ${this.outgoingQueue.length} queued messages to Supabase`);
-                while (this.outgoingQueue.length > 0) {
-                  const queuedMsg = this.outgoingQueue.shift()!;
+                const queueToFlush = [...this.outgoingQueue];
+                this.outgoingQueue = [];
+                console.log(`${this.getRoleTag()} [Signaling] Flushing ${queueToFlush.length} queued messages to Supabase`);
+                for (const queuedMsg of queueToFlush) {
                   try {
-                    channel.send({
+                    await channel.send({
                       type: 'broadcast',
                       event: 'cinemate-signal',
                       payload: queuedMsg,
