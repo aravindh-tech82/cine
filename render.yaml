@@ -7,7 +7,7 @@ services:
   - type: web
     name: cinemate
     runtime: static
-    buildCommand: npm run build
+    buildCommand: npm install --include=dev && npm run build
     staticPublishPath: dist
     pullRequestPreviewsEnabled: false
 
@@ -31,6 +31,10 @@ services:
 
     # Production Environment Variables
     envVars:
+      # Ensure Render installs devDependencies during build
+      - key: NPM_CONFIG_PRODUCTION
+        value: "false"
+
       # Supabase Project URL (e.g. https://your-project.supabase.co)
       - key: VITE_SUPABASE_URL
         sync: false
